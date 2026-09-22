@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and Upload Assets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          VERSION=${GITHUB_REF#refs/tags/}
+          LDFLAGS="-X main.version=${VERSION}"
+
+          # Linux AMD64
+          GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/rkn-linux-amd64 cmd/main.go
+
+          # Linux ARM64
+          GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/rkn-linux-arm64 cmd/main.go
+
+          # Linux ARM
+          GOOS=linux GOARCH=arm go build -ldflags="${LDFLAGS}" -o dist/rkn-linux-arm cmd/main.go
+
+          # Linux 386
+          GOOS=linux GOARCH=386 go build -ldflags="${LDFLAGS}" -o dist/rkn-linux-386 cmd/main.go
+
+      - name: Create checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/rkn-*
+            dist/checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
