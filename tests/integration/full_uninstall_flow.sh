@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BIN_PATH="${RKN_BIN:-${ROOT_DIR}/bin/rkn}"
+BIN_PATH="${RKN_GUARD_BIN:-${ROOT_DIR}/bin/rkn-guard}"
 ANTISCANNER_URL="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/antiscanner.list"
 GOV_NETWORKS_URL="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/government_networks.list"
 MANAGED_MARKER="# SCANNERS-BLOCK chain - managed by antiscan"

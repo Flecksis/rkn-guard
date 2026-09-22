@@ -10,7 +10,7 @@ NC='\033[0m' # No Color
 
 # Константы
 REPO="Flecksis/rkn-guard"
-BINARY_NAME="rkn"
+BINARY_NAME="rkn-guard"
 INSTALL_DIR="/usr/local/bin"
 LATEST_RELEASE_URL="https://github.com/${REPO}/releases/latest/download"
 DEV_MODE=false

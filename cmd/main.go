@@ -27,7 +27,7 @@ func main() {
 	logger.SetGlobalLogger(log)
 
 	rootCmd := &cobra.Command{
-		Use:     "rkn",
+		Use:     "rkn-guard",
 		Short:   "Инструмент для управления блокировкой сканеров через iptables и ipset",
 		Long:    `Утилита для скачивания списков подсетей сканеров и настройки правил iptables/ipset для их блокировки.`,
 		Version: version,
