@@ -5,6 +5,9 @@ set -u
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
 
 TG_URL="https://raw.githubusercontent.com/Flecksis/rkn-guard/master/app%20install.sh"
+MANAGER_URL="https://raw.githubusercontent.com/Flecksis/rkn-guard/master/install.sh"
+MANAGER_PATH="/opt/rkn-guard-manager.sh"
+MENU_COMMAND="/usr/local/bin/rkn"
 LIST_GOV="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/government_networks.list"
 LIST_SCAN="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/antiscanner.list"
 LIST_SKIPA="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/skipa.list"
@@ -43,17 +46,14 @@ uninstall_process() {
 
     [[ "$confirm" != "y" ]] && return
 
-    # Удаляем файлы менеджера
-    rm -f /usr/local/bin/rkn /opt/rkn-guard-manager.sh "$MANUAL_FILE"
-
     # Используем встроенный uninstall rkn-guard (чистит UFW, ipset, iptables, systemd, rsyslog)
-    if command -v rkn >/dev/null 2>&1; then
-        rkn uninstall --yes
+    if command -v rkn-guard >/dev/null 2>&1; then
+        rkn-guard uninstall --yes
     else
         # Fallback: ручная чистка (если бинарник уже удалён)
         systemctl stop antiscan-aggregate.timer antiscan-aggregate.service 2>/dev/null
         systemctl disable antiscan-aggregate.timer antiscan-aggregate.service 2>/dev/null
-        rm -f /usr/local/bin/rkn /usr/local/bin/antiscan-aggregate-logs.sh
+        rm -f /usr/local/bin/rkn-guard /usr/local/bin/antiscan-aggregate-logs.sh
         rm -f /etc/systemd/system/antiscan-*
         rm -f /etc/rsyslog.d/10-iptables-scanners.conf /etc/logrotate.d/iptables-scanners
 
@@ -70,6 +70,9 @@ uninstall_process() {
         sed -i '/SCANNERS-BLOCK/d' /etc/ufw/before6.rules 2>/dev/null
         ufw reload 2>/dev/null
     fi
+
+    # Удаляем команду меню и его сохранённый скрипт.
+    rm -f "$MENU_COMMAND" "$MANAGER_PATH" "$MANUAL_FILE"
 
     systemctl restart rsyslog 2>/dev/null
     echo -e "${GREEN}✅ Удалено.${NC}"
@@ -167,9 +170,24 @@ manage_test_ip() {
 
 update_lists() {
     echo -e "\n${CYAN}🔄 Обновление списков...${NC}"
-    rkn full -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" --enable-logging
+    rkn-guard full -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" --enable-logging
     echo -e "${GREEN}✅ Готово!${NC}"
     sleep 2
+}
+
+install_menu_command() {
+    local temp_manager="/tmp/rkn-guard-manager.sh"
+
+    if command -v curl >/dev/null; then
+        curl -fsSL "$MANAGER_URL" -o "$temp_manager"
+    else
+        wget -qO "$temp_manager" "$MANAGER_URL"
+    fi
+
+    install -m 755 "$temp_manager" "$MANAGER_PATH"
+    rm -f "$temp_manager"
+    printf '%s\n' '#!/usr/bin/env bash' "exec $MANAGER_PATH \"\$@\"" > "$MENU_COMMAND"
+    chmod 755 "$MENU_COMMAND"
 }
 
 install_process() {
@@ -185,8 +203,10 @@ install_process() {
 
     if command -v curl >/dev/null; then curl -fsSL "$TG_URL" | bash; else wget -qO- "$TG_URL" | bash; fi
 
+    install_menu_command
+
     echo -e "\n${BLUE}[INFO] Настройка правил...${NC}"
-    rkn full -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" --enable-logging
+    rkn-guard full -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" --enable-logging
 
     if [ $? -ne 0 ]; then
         echo -e "\n${RED}❌ ОШИБКА УСТАНОВКИ!${NC}"

@@ -247,7 +247,7 @@ func (s *IptablesService) saveWithUFW() error {
 			s.logger.Error().Msg("")
 			s.logger.Error().Msg("═══ ШАГ 2: Повторите установку rkn-guard ═══")
 			s.logger.Error().Msg("")
-			s.logger.Error().Msg("  sudo rkn full")
+			s.logger.Error().Msg("  sudo rkn-guard full")
 			s.logger.Error().Msg("")
 			s.logger.Error().Msg("═══ АЛЬТЕРНАТИВА: Удалить UFW ═══")
 			s.logger.Error().Msg("")
