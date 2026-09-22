@@ -28,16 +28,16 @@ jobs:
           LDFLAGS="-X main.version=${VERSION}"
 
           # Linux AMD64
-          GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/rkn-guard-linux-amd64 cmd/main.go
+          GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/rkn-guard-linux-amd64 ./cmd
 
           # Linux ARM64
-          GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/rkn-guard-linux-arm64 cmd/main.go
+          GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/rkn-guard-linux-arm64 ./cmd
 
           # Linux ARM
-          GOOS=linux GOARCH=arm go build -ldflags="${LDFLAGS}" -o dist/rkn-guard-linux-arm cmd/main.go
+          GOOS=linux GOARCH=arm go build -ldflags="${LDFLAGS}" -o dist/rkn-guard-linux-arm ./cmd
 
           # Linux 386
-          GOOS=linux GOARCH=386 go build -ldflags="${LDFLAGS}" -o dist/rkn-guard-linux-386 cmd/main.go
+          GOOS=linux GOARCH=386 go build -ldflags="${LDFLAGS}" -o dist/rkn-guard-linux-386 ./cmd
 
       - name: Create checksums
         run: |
