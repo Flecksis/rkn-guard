@@ -67,22 +67,12 @@ rkn
 curl -fsSL https://raw.githubusercontent.com/Flecksis/rkn-guard/master/install.sh | sudo bash -s -- install
 ```
 
-### Установка из клонированного репозитория
-
-```bash
-sudo bash install.sh install
-```
-
-> **Важно:** для установки должен существовать опубликованный GitHub Release, содержащий бинарные файлы `rkn-guard-linux-*`.
-
----
-
 ## 🖥️ Управление
 
 После установки запустите:
 
 ```bash
-sudo rkn
+rkn
 ```
 
 Откроется интерактивное меню управления `rkn-guard`.
