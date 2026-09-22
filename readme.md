@@ -162,4 +162,4 @@ GitHub: `github.com/Flecksis/rkn-guard`
 
 [Проект распространяется на условиях лицензии](https://github.com/Flecksis/rkn-guard/blob/master/LICENSE).
 
-Подробности находятся в файле `[LICENSE](https://github.com/Flecksis/rkn-guard/blob/master/LICENSE)`.
+Подробности находятся в файле [LICENSE](https://github.com/Flecksis/rkn-guard/blob/master/LICENSE)`
