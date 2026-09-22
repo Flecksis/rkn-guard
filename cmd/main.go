@@ -52,6 +52,15 @@ func main() {
 	fullCmd.Flags().BoolVarP(&enableLogging, "enable-logging", "l", false, "Включить логирование заблокированных подключений")
 	fullCmd.MarkFlagRequired("urls")
 
+	updateCmd := &cobra.Command{
+		Use:   "update",
+		Short: "Обновить списки подсетей без сброса счётчиков атак",
+		Long:  `Скачивает и обновляет ipset-наборы, не изменяя цепочки iptables. Счётчики заблокированных атак сохраняются.`,
+		Run:   runUpdate,
+	}
+	updateCmd.Flags().StringSliceVarP(&urls, "urls", "u", []string{}, "Список URL для скачивания подсетей")
+	updateCmd.MarkFlagRequired("urls")
+
 	uninstallCmd := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Удалить все изменения, внесённые rkn-guard",
@@ -62,6 +71,7 @@ func main() {
 	uninstallCmd.Flags().BoolVar(&removeLogs, "remove-logs", false, "Удалить логи rkn-guard из /var/log")
 
 	rootCmd.AddCommand(fullCmd)
+	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(uninstallCmd)
 
 	if err := rootCmd.Execute(); err != nil {

@@ -170,7 +170,7 @@ manage_test_ip() {
 
 update_lists() {
     echo -e "\n${CYAN}🔄 Обновление списков...${NC}"
-    rkn-guard full -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" --enable-logging
+    rkn-guard update -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA"
     echo -e "${GREEN}✅ Готово!${NC}"
     sleep 2
 }
@@ -188,6 +188,22 @@ install_menu_command() {
     rm -f "$temp_manager"
     printf '%s\n' '#!/usr/bin/env bash' "exec $MANAGER_PATH \"\$@\"" > "$MENU_COMMAND"
     chmod 755 "$MENU_COMMAND"
+}
+
+update_application() {
+    echo -e "\n${CYAN}⬆️  Обновление rkn-guard и меню...${NC}"
+
+    # Обновляем только бинарник и файлы меню. Не вызываем `full`, поэтому
+    # цепочки iptables и их счётчики заблокированных атак не сбрасываются.
+    if command -v curl >/dev/null; then
+        curl -fsSL "$TG_URL" | bash
+    else
+        wget -qO- "$TG_URL" | bash
+    fi
+
+    install_menu_command
+    echo -e "${GREEN}✅ rkn-guard и меню обновлены. Счётчики атак сохранены.${NC}"
+    sleep 2
 }
 
 install_process() {
@@ -248,7 +264,7 @@ show_menu() {
         [[ -z "$PKTS_CNT" ]] && PKTS_CNT="0"
 
         echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║              🛡️  RKN-GUARD MANAGER X3D    )             ║${NC}"
+        echo -e "${CYAN}║              🛡️  RKN-GUARD MANAGER by X3D vpn        ║${NC}"
         echo -e "${CYAN}╠══════════════════════════════════════════════════════╣${NC}"
         echo -e "║  📊 Подсетей:       ${GREEN}${IPSET_CNT}${NC}                             "
         echo -e "║  🔥 Атак отбито:    ${RED}${PKTS_CNT}${NC}                             "
@@ -259,8 +275,9 @@ show_menu() {
         echo -e " ${GREEN}3.${NC} 🕵 Логи IPv6 (Live)"
         echo -e " ${GREEN}4.${NC} 🧪 Управление IP (Ban/Unban)"
         echo -e " ${GREEN}5.${NC} 🔄 Обновить списки (Update)"
-        echo -e " ${GREEN}6.${NC} 🛠️  Переустановить (Reinstall)"
-        echo -e " ${RED}7.${NC} 🗑️  Удалить (Uninstall)"
+        echo -e " ${GREEN}6.${NC} ⬆️  Обновить rkn-guard"
+        echo -e " ${GREEN}7.${NC} 🛠️  Переустановить (Reinstall)"
+        echo -e " ${RED}8.${NC} 🗑️  Удалить (Uninstall)"
         echo -e " ${RED}0.${NC} ❌ Выход"
         echo ""
 
@@ -278,10 +295,13 @@ show_menu() {
             4) manage_test_ip ;;
             5) update_lists ;;
             6)
+                update_application
+                ;;
+            7)
                 rm -f /var/log/iptables-scanners-aggregate.csv
                 install_process
                 ;;
-            7) uninstall_process ;;
+            8) uninstall_process ;;
             0) exit 0 ;;
             *) echo "Неверно"; sleep 1 ;;
         esac
