@@ -248,7 +248,7 @@ show_menu() {
         [[ -z "$PKTS_CNT" ]] && PKTS_CNT="0"
 
         echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║              🛡️  RKN-GUARD MANAGER X3D                 ║${NC}"
+        echo -e "${CYAN}║              🛡️  RKN-GUARD MANAGER X3D    )             ║${NC}"
         echo -e "${CYAN}╠══════════════════════════════════════════════════════╣${NC}"
         echo -e "║  📊 Подсетей:       ${GREEN}${IPSET_CNT}${NC}                             "
         echo -e "║  🔥 Атак отбито:    ${RED}${PKTS_CNT}${NC}                             "
