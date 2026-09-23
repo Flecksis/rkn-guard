@@ -74,7 +74,7 @@ curl -fsSL https://raw.githubusercontent.com/Flecksis/rkn-guard/master/install.s
 ```bash
 rkn
 ```
-
+! Стоит регулярно обновлять само меню пунктом 6, и списки пунктом 5.
 Откроется интерактивное меню управления `rkn-guard`.
 
 Через него доступны:
