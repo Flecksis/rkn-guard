@@ -81,6 +81,12 @@ func main() {
 }
 
 func runFull(cmd *cobra.Command, args []string) {
+	lock, err := service.AcquireLock()
+	if err != nil {
+		logger.Global().Fatal().Err(err).Msg("Cannot acquire operation lock")
+	}
+	defer lock.Close()
+
 	log := logger.Global()
 	log.Info().Msg("=== Полная установка ===")
 
@@ -137,14 +143,9 @@ func runFull(cmd *cobra.Command, args []string) {
 		log.Fatal().Err(err).Msg("Failed to download subnets")
 	}
 
-	// Setup ipset
-	if err := ipsetSvc.Setup(); err != nil {
-		log.Fatal().Err(err).Msg("Failed to setup ipset")
-	}
-
-	// Fill ipset with subnets
-	if err := ipsetSvc.Fill(networks); err != nil {
-		log.Fatal().Err(err).Msg("Failed to fill ipset")
+	// Stage, replace and persist the lists before configuring firewall rules.
+	if err := ipsetSvc.Replace(networks, "/etc/ipset.conf"); err != nil {
+		log.Fatal().Err(err).Msg("Failed to replace ipset")
 	}
 
 	// Setup iptables
@@ -157,11 +158,6 @@ func runFull(cmd *cobra.Command, args []string) {
 		if err := loggingSvc.Setup(); err != nil {
 			log.Warn().Err(err).Msg("Failed to setup logging configuration")
 		}
-	}
-
-	// Save rules
-	if err := ipsetSvc.Save("/etc/ipset.conf"); err != nil {
-		log.Warn().Err(err).Msg("Failed to save ipset configuration")
 	}
 
 	// Create systemd service to restore ipset on boot (before UFW starts)
@@ -183,6 +179,12 @@ func runFull(cmd *cobra.Command, args []string) {
 // runUpdate refreshes ipset contents without recreating iptables rules, whose
 // counters contain the number of blocked attacks shown by the menu.
 func runUpdate(cmd *cobra.Command, args []string) {
+	lock, err := service.AcquireLock()
+	if err != nil {
+		logger.Global().Fatal().Err(err).Msg("Cannot acquire operation lock")
+	}
+	defer lock.Close()
+
 	log := logger.Global()
 	log.Info().Msg("=== Обновление списков без сброса счётчиков атак ===")
 
@@ -199,20 +201,20 @@ func runUpdate(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to download subnets")
 	}
-	if err := ipsetSvc.Setup(); err != nil {
-		log.Fatal().Err(err).Msg("Failed to setup ipset")
-	}
-	if err := ipsetSvc.Fill(networks); err != nil {
-		log.Fatal().Err(err).Msg("Failed to fill ipset")
-	}
-	if err := ipsetSvc.Save("/etc/ipset.conf"); err != nil {
-		log.Fatal().Err(err).Msg("Failed to save ipset configuration")
+	if err := ipsetSvc.Replace(networks, "/etc/ipset.conf"); err != nil {
+		log.Fatal().Err(err).Msg("Failed to replace ipset")
 	}
 
 	log.Info().Msg("Списки обновлены, счётчики атак сохранены")
 }
 
 func runUninstall(cmd *cobra.Command, args []string) {
+	lock, err := service.AcquireLock()
+	if err != nil {
+		logger.Global().Fatal().Err(err).Msg("Cannot acquire operation lock")
+	}
+	defer lock.Close()
+
 	log := logger.Global()
 	log.Info().Msg("=== Удаление rkn-guard ===")
 
