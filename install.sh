@@ -170,7 +170,10 @@ manage_test_ip() {
 
 update_lists() {
     echo -e "\n${CYAN}🔄 Обновление списков...${NC}"
-    rkn-guard update -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA"
+    if ! rkn-guard update -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA"; then
+        echo -e "${RED}❌ Обновление не выполнено. Проверьте сообщения об ошибках.${NC}" >&2
+        return 1
+    fi
     echo -e "${GREEN}✅ Готово!${NC}"
     sleep 2
 }
