@@ -14,7 +14,7 @@ const (
 	ufwManagedBlockEnd   = "# END SCANNERS-BLOCK"
 )
 
-// UninstallerService reverts rkn-guard-managed system changes.
+// UninstallerService отменяет изменения, внесённые rkn-guard в систему.
 type UninstallerService struct {
 	logger      zerolog.Logger
 	cmdSvc      *CommandService
@@ -22,7 +22,7 @@ type UninstallerService struct {
 	ipsetCmd    *IpsetCommandService
 }
 
-// NewUninstallerService creates a new uninstaller service.
+// NewUninstallerService создаёт сервис удаления.
 func NewUninstallerService(logger zerolog.Logger, cmdSvc *CommandService) *UninstallerService {
 	return &UninstallerService{
 		logger:      logger,
@@ -32,7 +32,7 @@ func NewUninstallerService(logger zerolog.Logger, cmdSvc *CommandService) *Unins
 	}
 }
 
-// Uninstall removes rkn-guard artifacts and restores firewall state.
+// Uninstall удаляет файлы rkn-guard и восстанавливает настройки firewall.
 func (s *UninstallerService) Uninstall(removeLogs bool) error {
 	s.logger.Info().Msg("=== Uninstall rkn-guard ===")
 	s.logger.Info().Msg("rkn-guard does not modify Linux routing tables (ip rule/ip route), skipping routing rollback")
@@ -248,7 +248,7 @@ func (s *UninstallerService) reloadRsyslog() error {
 		return nil
 	}
 
-	// Check if rsyslog service exists and is active
+	// Проверяем, установлен и запущен ли rsyslog.
 	if err := s.cmdSvc.Run("systemctl", "is-active", "rsyslog"); err != nil {
 		s.logger.Debug().Msg("rsyslog is not active, skipping reload")
 		return nil

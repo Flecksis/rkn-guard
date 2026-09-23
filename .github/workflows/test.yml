@@ -1,0 +1,21 @@
+name: Tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+      - run: go vet ./...
+      - run: go build -ldflags="-X main.version=dev -X main.branch=$BUILD_BRANCH" -o "$RUNNER_TEMP/rkn-guard" ./cmd
+        env:
+          BUILD_BRANCH: ${{ github.head_ref || github.ref_name }}
+      - run: bash -n install.sh tests/integration/safe_updates.sh
+      - run: bash tests/menu_versions.sh

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DESTRUCTIVE: disposable Linux container only; requires CAP_NET_ADMIN and UFW.
+# Тест меняет firewall. Запускать только в одноразовом Linux-контейнере с CAP_NET_ADMIN и UFW.
 set -euo pipefail
 [[ -f /.dockerenv && ${RKN_DISPOSABLE_TEST:-} == yes ]] || { echo 'Use a disposable container and RKN_DISPOSABLE_TEST=yes'; exit 1; }
 work=$(mktemp -d)
@@ -62,6 +62,12 @@ rkn-guard full -u "$url/next" > "$work/full.log" 2>&1
 ufw status | grep 'Status: active'
 iptables -C ufw-before-input -j SCANNERS-BLOCK
 ip6tables -C ufw6-before-input -j SCANNERS-BLOCK
+for reload in 1 2; do
+    ufw reload >/dev/null
+    test "$(iptables -S ufw-before-input | awk '/^-A / {print; exit}')" = '-A ufw-before-input -j SCANNERS-BLOCK'
+    test "$(ip6tables -S ufw6-before-input | awk '/^-A / {print; exit}')" = '-A ufw6-before-input -j SCANNERS-BLOCK'
+done
+echo 'PASS: repeated UFW reload preserves first-position jumps for both families'
 cp /etc/ufw/before.rules "$work/before4"
 cp /etc/ufw/before6.rules "$work/before6"
 cat > "$work/bin/ufw" <<'EOF'
@@ -82,6 +88,34 @@ if grep -q disable /tmp/rkn-ufw-calls; then echo 'Disabled active firewall'; exi
 iptables -C ufw-before-input -j SCANNERS-BLOCK
 ip6tables -C ufw6-before-input -j SCANNERS-BLOCK
 echo 'PASS: failed reload returns failure, restores files and keeps UFW active'
+# Подменяем только проверку перехода, не затрагивая команды восстановления UFW.
+# Ошибка срабатывает один раз, чтобы не помешать откату.
+for binary in iptables ip6tables; do
+    cat > "$work/bin/$binary" <<'EOF'
+#!/bin/sh
+binary=${0##*/}
+if [ "${FAIL_JUMP_BINARY:-}" = "$binary" ] && [ "$1" = "${FAIL_JUMP_ACTION:-}" ] && [ -f /tmp/rkn-fail-jump ]; then
+    rm /tmp/rkn-fail-jump
+    exit 79
+fi
+exec "/usr/sbin/$binary" "$@"
+EOF
+    chmod +x "$work/bin/$binary"
+done
+for binary in iptables ip6tables; do
+    for action in -S; do
+        touch /tmp/rkn-fail-jump
+        fail env PATH="$work/bin:$PATH" FAIL_JUMP_BINARY="$binary" FAIL_JUMP_ACTION="$action" rkn-guard full -u "$url/next" --enable-logging
+        test ! -f /tmp/rkn-fail-jump
+        cmp /etc/ufw/before.rules "$work/before4"
+        cmp /etc/ufw/before6.rules "$work/before6"
+        ufw status | grep 'Status: active'
+        iptables -C ufw-before-input -j SCANNERS-BLOCK
+        ip6tables -C ufw6-before-input -j SCANNERS-BLOCK
+    done
+done
+if grep -q disable /tmp/rkn-ufw-calls; then echo 'Disabled active firewall'; exit 1; fi
+echo 'PASS: jump verification failures return failure and restore files and active jumps'
 /usr/sbin/ufw --force disable >/dev/null
 fail env PATH="$work/bin:$PATH" rkn-guard full -u "$url/next"
 cmp /etc/ufw/before.rules "$work/before4"

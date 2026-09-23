@@ -12,6 +12,62 @@ LIST_GOV="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/re
 LIST_SCAN="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/antiscanner.list"
 LIST_SKIPA="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/skipa.list"
 MANUAL_FILE="/opt/rkn-guard-manual.list"
+RELEASE_API="https://api.github.com/repos/Flecksis/rkn-guard/releases/latest"
+CURRENT_VERSION="не установлена"
+CURRENT_BRANCH="неизвестна"
+LATEST_VERSION=""
+UPDATE_STATUS="ещё не проверено"
+LAST_UPDATE_CHECK=-600
+
+refresh_version_status() {
+    local info old_version payload current latest newest
+    CURRENT_VERSION="не установлена"
+    CURRENT_BRANCH="неизвестна"
+    if command -v rkn-guard >/dev/null 2>&1; then
+        if info=$(rkn-guard build-info 2>/dev/null); then
+            CURRENT_VERSION=$(printf '%s\n' "$info" | head -n 1)
+            CURRENT_BRANCH=$(printf '%s\n' "$info" | sed -n '2p')
+            [[ -z "$CURRENT_BRANCH" || "$CURRENT_BRANCH" == unknown ]] && CURRENT_BRANCH="неизвестна"
+        else
+            # Старые сборки ещё не знают команду build-info.
+            old_version=$(rkn-guard --version 2>/dev/null) || old_version=""
+            CURRENT_VERSION=${old_version##* }
+            [[ -z "$CURRENT_VERSION" ]] && CURRENT_VERSION="неизвестна"
+        fi
+    fi
+    # Не обращаемся к GitHub при каждом возврате в меню.
+    if (( SECONDS - LAST_UPDATE_CHECK >= 600 )); then
+        LAST_UPDATE_CHECK=$SECONDS
+        LATEST_VERSION=""
+        payload=""
+        if command -v curl >/dev/null 2>&1; then
+            payload=$(curl -fsSL --connect-timeout 3 --max-time 5 "$RELEASE_API" 2>/dev/null) || payload=""
+        elif command -v wget >/dev/null 2>&1; then
+            payload=$(wget -qO- --timeout=5 --tries=1 "$RELEASE_API" 2>/dev/null) || payload=""
+        fi
+        latest=$(printf '%s\n' "$payload" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+        # Показываем только номер версии, без управляющих символов из ответа.
+        [[ "$latest" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] && LATEST_VERSION=$latest
+    fi
+    if [[ -z "$LATEST_VERSION" ]]; then
+        UPDATE_STATUS="не удалось проверить"
+        return
+    fi
+    current=${CURRENT_VERSION#v}
+    latest=${LATEST_VERSION#v}
+    if [[ ! "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        UPDATE_STATUS="последний стабильный релиз: $LATEST_VERSION; сборка не сравнивается"
+    elif [[ "$current" == "$latest" ]]; then
+        UPDATE_STATUS="установлена последняя версия ($LATEST_VERSION)"
+    else
+        newest=$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n 1)
+        if [[ "$newest" == "$latest" ]]; then
+            UPDATE_STATUS="доступно обновление: $LATEST_VERSION"
+        else
+            UPDATE_STATUS="сборка новее стабильного релиза $LATEST_VERSION"
+        fi
+    fi
+}
 
 check_root() {
     [[ $EUID -ne 0 ]] && { echo -e "${RED}Запуск только от root!${NC}"; exit 1; }
@@ -50,7 +106,7 @@ uninstall_process() {
     if command -v rkn-guard >/dev/null 2>&1; then
         rkn-guard uninstall --yes
     else
-        # Fallback: ручная чистка (если бинарник уже удалён)
+        # Если бинарник уже удалён, убираем оставшиеся файлы и правила вручную.
         systemctl stop antiscan-aggregate.timer antiscan-aggregate.service 2>/dev/null
         systemctl disable antiscan-aggregate.timer antiscan-aggregate.service 2>/dev/null
         rm -f /usr/local/bin/rkn-guard /usr/local/bin/antiscan-aggregate-logs.sh
@@ -261,6 +317,7 @@ show_menu() {
     trap 'exit 0' INT
     while true; do
         clear
+        refresh_version_status
         IPSET_CNT=$(ipset list SCANNERS-BLOCK-V4 2>/dev/null | grep "Number of entries" | awk '{print $4}')
         [[ -z "$IPSET_CNT" ]] && IPSET_CNT="0"
         PKTS_CNT=$(iptables -vnL SCANNERS-BLOCK 2>/dev/null | grep "LOG" | awk '{print $1}')
@@ -273,6 +330,8 @@ show_menu() {
         printf "${CYAN}║${NC}  📊 Подсетей:       ${GREEN}%-33s${NC}${CYAN}║${NC}\n" "$IPSET_CNT"
         printf "${CYAN}║${NC}  🔥 Атак отбито:    ${RED}%-33s${NC}${CYAN}║${NC}\n" "$PKTS_CNT"
         echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
+        printf 'Версия: %s | Ветка сборки: %s\n' "$CURRENT_VERSION" "$CURRENT_BRANCH"
+        printf 'Обновления: %s\n' "$UPDATE_STATUS"
         echo ""
         echo -e " ${GREEN}1.${NC} 📈 Топ атак (CSV)"
         echo -e " ${GREEN}2.${NC} 🕵 Логи IPv4 (Live)"
@@ -312,6 +371,9 @@ show_menu() {
     done
 }
 
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
 check_root
 case "${1:-}" in
     install) install_process ;;

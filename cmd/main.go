@@ -19,10 +19,11 @@ var (
 	removeLogs    bool
 	logLevel      string
 	version       = "dev" // Версия будет устанавливаться при сборке через -ldflags
+	branch        = "unknown"
 )
 
 func main() {
-	// Setup logger
+	// Настраиваем журнал.
 	log := logger.New()
 	logger.SetGlobalLogger(log)
 
@@ -32,7 +33,7 @@ func main() {
 		Long:    `Утилита для скачивания списков подсетей сканеров и настройки правил iptables/ipset для их блокировки.`,
 		Version: version,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
-			// Update logger level if specified
+			// Если указан уровень сообщений, применяем его.
 			if logLevel != "" {
 				log = logger.NewWithLevel(logLevel)
 				logger.SetGlobalLogger(log)
@@ -73,6 +74,13 @@ func main() {
 	rootCmd.AddCommand(fullCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(uninstallCmd)
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "build-info",
+		Short: "Показать версию и ветку сборки",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("%s\n%s\n", version, branch)
+		},
+	})
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -90,8 +98,8 @@ func runFull(cmd *cobra.Command, args []string) {
 	log := logger.Global()
 	log.Info().Msg("=== Полная установка ===")
 
-	// Create services
-	// Create command service
+	// Создаём сервисы.
+	// Создаём исполнитель системных команд.
 	cmdSvc := service.NewCommandService(log.Logger)
 
 	installer := service.NewInstallerService(log.Logger)
@@ -100,7 +108,7 @@ func runFull(cmd *cobra.Command, args []string) {
 	iptablesSvc := service.NewIptablesService(log.Logger, cmdSvc, enableLogging)
 	loggingSvc := service.NewLoggingService(log.Logger)
 
-	// Check root
+	// Проверяем права root.
 	if err := installer.CheckRootPrivileges(); err != nil {
 		log.Fatal().Msg("This program must be run as root (use sudo)")
 	}
@@ -109,7 +117,7 @@ func runFull(cmd *cobra.Command, args []string) {
 		log.Panic().Msg("Не указаны URL для скачивания подсетей. Используйте флаг --urls")
 	}
 
-	// UFW Safety Warning
+	// Предупреждаем о необходимости разрешить SSH в UFW.
 	if cmdSvc.CommandExists("ufw") {
 		output, err := cmdSvc.RunOutput("ufw", "status")
 		isActive := err == nil && strings.Contains(output, "Status: active")
@@ -127,40 +135,40 @@ func runFull(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	// Ensure dependencies
+	// Проверяем зависимости.
 	if err := installer.EnsureDependencies(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to install dependencies")
 	}
 
-	// Ensure netfilter-persistent is installed
+	// При необходимости устанавливаем netfilter-persistent.
 	if err := installer.EnsureNetfilterPersistent(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to install netfilter-persistent")
 	}
 
-	// Download subnets
+	// Загружаем списки подсетей.
 	networks, err := downloader.Download(urls)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to download subnets")
 	}
 
-	// Stage, replace and persist the lists before configuring firewall rules.
+	// Готовим, заменяем и сохраняем наборы до настройки правил firewall.
 	if err := ipsetSvc.Replace(networks, "/etc/ipset.conf"); err != nil {
 		log.Fatal().Err(err).Msg("Failed to replace ipset")
 	}
 
-	// Setup iptables
+	// Настраиваем iptables.
 	if err := iptablesSvc.SetupChain(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to setup iptables")
 	}
 
-	// Setup logging if enabled
+	// Настраиваем журнал, если он включён.
 	if enableLogging {
 		if err := loggingSvc.Setup(); err != nil {
 			log.Warn().Err(err).Msg("Failed to setup logging configuration")
 		}
 	}
 
-	// Create systemd service to restore ipset on boot (before UFW starts)
+	// Создаём сервис восстановления ipset, который запускается раньше UFW.
 	if err := ipsetSvc.CreateRestoreService(); err != nil {
 		log.Warn().Err(err).Msg("Failed to create ipset restore service")
 	}
@@ -176,8 +184,8 @@ func runFull(cmd *cobra.Command, args []string) {
 	log.Info().Msg("Полная установка успешно завершена")
 }
 
-// runUpdate refreshes ipset contents without recreating iptables rules, whose
-// counters contain the number of blocked attacks shown by the menu.
+// runUpdate обновляет наборы ipset, не пересоздавая правила iptables.
+// Так сохраняются счётчики заблокированных пакетов, которые показывает меню.
 func runUpdate(cmd *cobra.Command, args []string) {
 	lock, err := service.AcquireLock()
 	if err != nil {

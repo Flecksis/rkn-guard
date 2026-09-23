@@ -8,48 +8,48 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// LoggingService handles logging configuration setup
+// LoggingService настраивает сбор журналов.
 type LoggingService struct {
 	logger zerolog.Logger
 }
 
-// NewLoggingService creates a new logging service
+// NewLoggingService создаёт сервис настройки журналов.
 func NewLoggingService(logger zerolog.Logger) *LoggingService {
 	return &LoggingService{
 		logger: logger,
 	}
 }
 
-// Setup configures rsyslog, logrotate, and aggregation script
+// Setup настраивает rsyslog, ротацию и сбор статистики.
 func (s *LoggingService) Setup() error {
 	s.logger.Info().Msg("Настройка логирования")
 
-	// Create rsyslog config
+	// Создаём настройки rsyslog.
 	if err := s.setupRsyslog(); err != nil {
 		return fmt.Errorf("failed to setup rsyslog: %w", err)
 	}
 
-	// Create log files
+	// Создаём файлы журналов.
 	if err := s.createLogFiles(); err != nil {
 		return fmt.Errorf("failed to create log files: %w", err)
 	}
 
-	// Create logrotate config
+	// Настраиваем ротацию журналов.
 	if err := s.setupLogrotate(); err != nil {
 		return fmt.Errorf("failed to setup logrotate: %w", err)
 	}
 
-	// Create aggregation script
+	// Создаём скрипт сбора статистики.
 	if err := s.setupAggregationScript(); err != nil {
 		return fmt.Errorf("failed to setup aggregation script: %w", err)
 	}
 
-	// Create cron job
+	// Настраиваем периодический запуск.
 	if err := s.setupCronJob(); err != nil {
 		return fmt.Errorf("failed to setup cron job: %w", err)
 	}
 
-	// Reload rsyslog
+	// Перезапускаем rsyslog.
 	if err := s.reloadRsyslog(); err != nil {
 		s.logger.Warn().Err(err).Msg("Не удалось перезагрузить rsyslog, может потребоваться ручная перезагрузка")
 	}
@@ -63,7 +63,7 @@ func (s *LoggingService) Setup() error {
 	return nil
 }
 
-// setupRsyslog creates rsyslog configuration
+// setupRsyslog создаёт настройки rsyslog.
 func (s *LoggingService) setupRsyslog() error {
 	if err := os.WriteFile(RsyslogConfigPath, []byte(RsyslogConfigTemplate), 0644); err != nil {
 		return err
@@ -72,9 +72,9 @@ func (s *LoggingService) setupRsyslog() error {
 	return nil
 }
 
-// createLogFiles creates log files with proper permissions
+// createLogFiles создаёт журналы с нужными правами.
 func (s *LoggingService) createLogFiles() error {
-	// Create empty log files with correct permissions
+	// Создаём пустые журналы и выставляем права.
 	logFiles := []string{
 		IPv4LogPath,
 		IPv6LogPath,
@@ -88,7 +88,7 @@ func (s *LoggingService) createLogFiles() error {
 			}
 			f.Close()
 
-			// Set permissions
+			// Выставляем права доступа.
 			if err := exec.Command("chown", "syslog:adm", logFile).Run(); err != nil {
 				s.logger.Warn().Err(err).Str("file", logFile).Msg("Failed to chown log file")
 			}
@@ -103,7 +103,7 @@ func (s *LoggingService) createLogFiles() error {
 	return nil
 }
 
-// setupLogrotate creates logrotate configuration
+// setupLogrotate создаёт настройки ротации.
 func (s *LoggingService) setupLogrotate() error {
 	if err := os.WriteFile(LogrotateConfigPath, []byte(LogrotateConfigTemplate), 0644); err != nil {
 		return err
@@ -113,13 +113,13 @@ func (s *LoggingService) setupLogrotate() error {
 	return nil
 }
 
-// setupAggregationScript creates the log aggregation shell script
+// setupAggregationScript создаёт скрипт сбора статистики.
 func (s *LoggingService) setupAggregationScript() error {
 	if err := os.WriteFile(AggregateLogsScriptPath, []byte(AggregateLogsScriptTemplate), 0755); err != nil {
 		return fmt.Errorf("failed to write aggregator script: %w", err)
 	}
 
-	// Ensure it's executable
+	// Разрешаем запуск скрипта.
 	if err := exec.Command("chmod", "+x", AggregateLogsScriptPath).Run(); err != nil {
 		return fmt.Errorf("failed to make script executable: %w", err)
 	}
@@ -128,26 +128,26 @@ func (s *LoggingService) setupAggregationScript() error {
 	return nil
 }
 
-// setupCronJob creates systemd timer for log aggregation (runs every 30 seconds)
+// setupCronJob создаёт таймер systemd с интервалом 30 секунд.
 func (s *LoggingService) setupCronJob() error {
-	// Create systemd service
+	// Создаём сервис systemd.
 	if err := os.WriteFile(AggregateLogsServicePath, []byte(AggregateLogsServiceTemplate), 0644); err != nil {
 		return err
 	}
 	s.logger.Info().Str("path", AggregateLogsServicePath).Msg("Создан systemd сервис")
 
-	// Create systemd timer
+	// Создаём таймер systemd.
 	if err := os.WriteFile(AggregateLogsTimerPath, []byte(AggregateLogsTimerTemplate), 0644); err != nil {
 		return err
 	}
 	s.logger.Info().Str("path", AggregateLogsTimerPath).Msg("Создан systemd timer")
 
-	// Reload systemd daemon
+	// Просим systemd перечитать файлы сервисов.
 	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
 		s.logger.Warn().Err(err).Msg("Не удалось перезапустить systemd daemon")
 	}
 
-	// Enable and start timer
+	// Включаем и запускаем таймер.
 	if err := exec.Command("systemctl", "enable", "antiscan-aggregate.timer").Run(); err != nil {
 		s.logger.Warn().Err(err).Msg("Не удалось включить antiscan-aggregate")
 	}
@@ -160,7 +160,7 @@ func (s *LoggingService) setupCronJob() error {
 	return nil
 }
 
-// reloadRsyslog restarts rsyslog service
+// reloadRsyslog перезапускает rsyslog.
 func (s *LoggingService) reloadRsyslog() error {
 	if err := exec.Command("systemctl", "restart", "rsyslog").Run(); err != nil {
 		return err

@@ -1,8 +1,8 @@
 package service
 
-// SystemdTemplates contains all systemd unit file templates
+// Шаблоны сервисов и таймеров systemd.
 const (
-	// IpsetRestoreServiceTemplate is the systemd service for restoring ipset on boot
+	// IpsetRestoreServiceTemplate восстанавливает ipset при загрузке.
 	IpsetRestoreServiceTemplate = `[Unit]
 Description=Restore rkn-guard ipset configuration
 Before=ufw.service
@@ -21,7 +21,7 @@ WantedBy=multi-user.target
 RequiredBy=netfilter-persistent.service
 `
 
-	// MoveRulesServiceTemplate is the systemd service for moving SCANNERS-BLOCK to position 1
+	// MoveRulesServiceTemplate — старый сервис перестановки SCANNERS-BLOCK на первое место.
 	MoveRulesServiceTemplate = `[Unit]
 Description=Move rkn-guard rules to position 1 in UFW chains
 After=ufw.service
@@ -40,7 +40,7 @@ ExecStart=/usr/sbin/ip6tables -I ufw6-before-input 1 -j SCANNERS-BLOCK
 WantedBy=multi-user.target
 `
 
-	// AggregateLogsServiceTemplate is the systemd service for log aggregation
+	// AggregateLogsServiceTemplate запускает сбор статистики из журналов.
 	AggregateLogsServiceTemplate = `[Unit]
 Description=rkn-guard Log Aggregator
 After=rsyslog.service
@@ -52,7 +52,7 @@ StandardOutput=journal
 StandardError=journal
 `
 
-	// AggregateLogsTimerTemplate is the systemd timer for log aggregation
+	// AggregateLogsTimerTemplate задаёт расписание сбора статистики.
 	AggregateLogsTimerTemplate = `[Unit]
 Description=rkn-guard Log Aggregator Timer
 Requires=antiscan-aggregate.service
@@ -66,22 +66,22 @@ AccuracySec=5sec
 WantedBy=timers.target
 `
 
-	// AggregateLogsScriptTemplate is the bash script for log aggregation
+	// AggregateLogsScriptTemplate собирает статистику из журналов.
 	AggregateLogsScriptTemplate = `#!/bin/bash
-# rkn-guard Log Aggregation Script
-# Aggregates iptables logs into CSV format with ASN/netname lookup
+# Сбор статистики rkn-guard.
+# Преобразуем журналы iptables в CSV и добавляем ASN и имя сети.
 #
-# Output CSV format: IP_TYPE|IP_ADDRESS|ASN|NETNAME|COUNT|LAST_SEEN
-# Example: v4|1.2.3.4|AS12345|EXAMPLE-NET|42|2026-01-26T12:34:56
+# Поля CSV: IP_TYPE|IP_ADDRESS|ASN|NETNAME|COUNT|LAST_SEEN
+# Пример: v4|1.2.3.4|AS12345|EXAMPLE-NET|42|2026-01-26T12:34:56
 #
-# Features:
-# - Whois lookup with caching (RIPE database with auto-referrals)
-# - Atomic log rotation (grab -> clear -> process)
-# - Merges with existing data and sorts by count
+# Что делает скрипт:
+# - Запрашивает whois через RIPE и кэширует результат.
+# - Забирает журнал, очищает его и обрабатывает собранные строки.
+# - Объединяет данные с сохранённой статистикой и сортирует по числу событий.
 
 set -uo pipefail
 
-# Configuration
+# Настройки.
 IPV4_LOG="/var/log/iptables-scanners-ipv4.log"
 IPV6_LOG="/var/log/iptables-scanners-ipv6.log"
 OUTPUT_CSV="/var/log/iptables-scanners-aggregate.csv"
@@ -89,14 +89,14 @@ WHOIS_CACHE="/tmp/antiscan-whois-cache.txt"
 TEMP_IPV4="/tmp/antiscan-ipv4-$$.tmp"
 TEMP_IPV6="/tmp/antiscan-ipv6-$$.tmp"
 
-# Create whois cache if doesn't exist, clean if older than 1 day
+# Создаём кэш whois, если его нет; старый кэш очищаем раз в сутки.
 if [ -f "$WHOIS_CACHE" ]; then
-    # Remove cache if older than 1 day
+    # Удаляем кэш старше суток.
     find "$WHOIS_CACHE" -mtime +1 -delete 2>/dev/null || true
 fi
 touch "$WHOIS_CACHE"
 
-# Grab content and immediately clear (atomic as possible)
+# Забираем содержимое и сразу очищаем исходный журнал.
 if [ -f "$IPV4_LOG" ]; then
     cat "$IPV4_LOG" > "$TEMP_IPV4"
     > "$IPV4_LOG"
@@ -111,14 +111,14 @@ if [ -f "$IPV6_LOG" ]; then
     chmod 640 "$IPV6_LOG" 2>/dev/null || true
 fi
 
-# Function to get ASN and netname from IP with caching
+# Получаем ASN и имя сети для адреса, по возможности из кэша.
 get_ip_info() {
     local ip="$1"
 
-    # Check cache first
+    # Сначала смотрим в кэше.
     local cached=$(grep "^${ip}|" "$WHOIS_CACHE" 2>/dev/null | head -1)
     if [ -n "$cached" ]; then
-        # Return cached result (format: IP|ASN|NETNAME)
+        # Возвращаем сохранённые данные в формате IP|ASN|NETNAME.
         echo "$cached" | cut -d'|' -f2-
         return
     fi
@@ -126,52 +126,52 @@ get_ip_info() {
     local asn=""
     local netname=""
 
-    # Always use RIPE (most comprehensive database with auto-referrals)
+    # Запрашиваем RIPE, который может перенаправить запрос в нужную базу.
     local whois_server="whois.ripe.net"
 
-    # Try whois lookup with timeout
+    # Ограничиваем время ожидания ответа whois.
     local whois_output=$(timeout 3 whois -h "$whois_server" "$ip" 2>/dev/null || echo "")
 
     if [ -n "$whois_output" ]; then
-        # Extract ASN from origin: line only
+        # Берём ASN только из строки origin:.
         asn=$(echo "$whois_output" | grep -iE "^origin:" | head -1 | awk '{print $2}' | sed 's/AS//gi' | tr -d '\r\n ')
 
-        # Extract netname from netname: line only
+        # Имя сети берём только из строки netname:.
         netname=$(echo "$whois_output" | grep -iE "^netname:" | head -1 | awk '{print $2}' | tr -d '\r\n')
     fi
 
-    # Validate ASN is numeric
+    # Проверяем, что номер ASN состоит из цифр.
     if [ -n "$asn" ] && ! echo "$asn" | grep -qE '^[0-9]+$'; then
         asn=""
     fi
 
-    # If empty, set defaults
+    # Для пустых полей подставляем значения по умолчанию.
     [ -z "$asn" ] && asn="UNKNOWN"
     [ -z "$netname" ] && netname="UNKNOWN"
 
-    # Add AS prefix if missing
+    # При необходимости добавляем префикс AS.
     if [ "$asn" != "UNKNOWN" ] && ! echo "$asn" | grep -q "^AS"; then
         asn="AS${asn}"
     fi
 
-    # Save to cache
+    # Сохраняем результат в кэш.
     echo "${ip}|${asn}|${netname}" >> "$WHOIS_CACHE"
 
     echo "${asn}|${netname}"
 }
 
-# Create CSV header if file doesn't exist
+# Если CSV ещё не существует, записываем заголовок.
 if [ ! -f "$OUTPUT_CSV" ]; then
     echo "IP_TYPE|IP_ADDRESS|ASN|NETNAME|COUNT|LAST_SEEN" > "$OUTPUT_CSV"
 fi
 
-# Process grabbed logs
+# Обрабатываем собранные строки журнала.
 TEMP_NEW="/tmp/antiscan-new-$$.tmp"
 > "$TEMP_NEW"
 
 if [ -f "$TEMP_IPV4" ] && [ -s "$TEMP_IPV4" ]; then
     grep 'ANTISCAN-v4:' "$TEMP_IPV4" | grep -oE 'SRC=[0-9.]+' | sed 's/SRC=//' | sort | uniq -c | while read cnt ip; do
-        # Get timestamp for this IP (last occurrence)
+        # Находим время последнего события для этого IP.
         tm=$(grep "SRC=$ip" "$TEMP_IPV4" | tail -1 | awk '{print $1}')
         info=$(get_ip_info "$ip")
         echo "v4|${ip}|${info}|${cnt}|${tm}" >> "$TEMP_NEW"
@@ -180,14 +180,14 @@ fi
 
 if [ -f "$TEMP_IPV6" ] && [ -s "$TEMP_IPV6" ]; then
     grep 'ANTISCAN-v6:' "$TEMP_IPV6" | grep -oE 'SRC=[0-9a-fA-F:]+' | sed 's/SRC=//' | sort | uniq -c | while read cnt ip; do
-        # Get timestamp for this IP (last occurrence)
+        # Находим время последнего события для этого IP.
         tm=$(grep "SRC=$ip" "$TEMP_IPV6" | tail -1 | awk '{print $1}')
         info=$(get_ip_info "$ip")
         echo "v6|${ip}|${info}|${cnt}|${tm}" >> "$TEMP_NEW"
     done
 fi
 
-# Merge with existing CSV if there's new data
+# Если появились данные, объединяем их с сохранённым CSV.
 if [ -s "$TEMP_NEW" ]; then
     {
         echo "IP_TYPE|IP_ADDRESS|ASN|NETNAME|COUNT|LAST_SEEN"
@@ -211,19 +211,19 @@ if [ -s "$TEMP_NEW" ]; then
     mv "${OUTPUT_CSV}.new" "$OUTPUT_CSV"
 fi
 
-# Cleanup
+# Удаляем временные файлы.
 rm -f "$TEMP_NEW" "$TEMP_IPV4" "$TEMP_IPV6"
 
 exit 0
 `
 
-	// RsyslogConfigTemplate is the rsyslog configuration for iptables logging
+	// RsyslogConfigTemplate настраивает запись событий iptables.
 	RsyslogConfigTemplate = `:msg, contains, "ANTISCAN-v4: " /var/log/iptables-scanners-ipv4.log
 :msg, contains, "ANTISCAN-v6: " /var/log/iptables-scanners-ipv6.log
 & stop
 `
 
-	// LogrotateConfigTemplate is the logrotate configuration
+	// LogrotateConfigTemplate задаёт ротацию журналов.
 	LogrotateConfigTemplate = `/var/log/iptables-scanners-*.log {
     daily
     rotate 7
@@ -250,7 +250,7 @@ exit 0
 `
 )
 
-// SystemdServicePaths contains paths to systemd service files
+// Пути к файлам сервисов systemd.
 const (
 	IpsetRestoreServicePath  = "/etc/systemd/system/antiscan-ipset-restore.service"
 	MoveRulesServicePath     = "/etc/systemd/system/antiscan-move-rules.service"
@@ -261,32 +261,32 @@ const (
 	LogrotateConfigPath      = "/etc/logrotate.d/iptables-scanners"
 )
 
-// UFWBeforeRulesTemplates contains templates for UFW before.rules
+// Шаблоны блоков для before-файлов UFW.
 const (
-	// UFWBeforeRulesHeader is the header for SCANNERS-BLOCK in UFW before.rules
+	// UFWBeforeRulesHeader открывает наш блок в before.rules.
 	UFWBeforeRulesHeader = `
 # SCANNERS-BLOCK chain - managed by antiscan
 :SCANNERS-BLOCK - [0:0]
 -A ufw-before-input -j SCANNERS-BLOCK
 `
 
-	// UFWBeforeRulesFooter is the footer for SCANNERS-BLOCK in UFW before.rules
+	// UFWBeforeRulesFooter закрывает наш блок в before.rules.
 	UFWBeforeRulesFooter = `# END SCANNERS-BLOCK
 `
 
-	// UFW6BeforeRulesHeader is the header for SCANNERS-BLOCK in UFW before6.rules
+	// UFW6BeforeRulesHeader открывает наш блок в before6.rules.
 	UFW6BeforeRulesHeader = `
 # SCANNERS-BLOCK chain - managed by antiscan
 :SCANNERS-BLOCK - [0:0]
 -A ufw6-before-input -j SCANNERS-BLOCK
 `
 
-	// UFW6BeforeRulesFooter is the footer for SCANNERS-BLOCK in UFW before6.rules
+	// UFW6BeforeRulesFooter закрывает наш блок в before6.rules.
 	UFW6BeforeRulesFooter = `# END SCANNERS-BLOCK
 `
 )
 
-// IpsetConfigPaths contains paths for ipset configuration
+// Пути к настройкам ipset.
 const (
 	IpsetConfigPath     = "/etc/ipset.conf"
 	IpsetConfigPathAlt  = "/etc/iptables/ipsets"
@@ -296,7 +296,7 @@ const (
 	UFW6BeforeRulesPath = "/etc/ufw/before6.rules"
 )
 
-// LogPaths contains paths for log files
+// Пути к журналам.
 const (
 	IPv4LogPath      = "/var/log/iptables-scanners-ipv4.log"
 	IPv6LogPath      = "/var/log/iptables-scanners-ipv6.log"

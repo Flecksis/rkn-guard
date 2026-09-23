@@ -12,14 +12,14 @@ const (
 	ipsetV6Name = "SCANNERS-BLOCK-V6"
 )
 
-// IpsetService handles ipset operations
+// IpsetService управляет наборами ipset.
 type IpsetService struct {
 	logger   zerolog.Logger
 	cmdSvc   *CommandService
 	ipsetCmd *IpsetCommandService
 }
 
-// NewIpsetService creates a new ipset service
+// NewIpsetService создаёт сервис управления ipset.
 func NewIpsetService(logger zerolog.Logger, cmdSvc *CommandService) *IpsetService {
 	return &IpsetService{
 		logger:   logger,
@@ -28,7 +28,7 @@ func NewIpsetService(logger zerolog.Logger, cmdSvc *CommandService) *IpsetServic
 	}
 }
 
-// Restore restores ipset configuration from file
+// Restore восстанавливает наборы из файла.
 func (s *IpsetService) Restore(path string) error {
 	s.logger.Info().Str("path", path).Msg("Загрузка конфигурации ipset")
 
@@ -40,7 +40,7 @@ func (s *IpsetService) Restore(path string) error {
 	return nil
 }
 
-// CreateRestoreService creates systemd service to restore ipset on boot
+// CreateRestoreService создаёт сервис восстановления ipset при загрузке.
 func (s *IpsetService) CreateRestoreService() error {
 	s.logger.Info().Msg("Создание systemd сервиса для загрузки конфигурации ipset")
 
@@ -49,12 +49,12 @@ func (s *IpsetService) CreateRestoreService() error {
 	}
 	s.logger.Info().Str("path", IpsetRestoreServicePath).Msg("Создан systemd сервис")
 
-	// Reload systemd daemon
+	// Просим systemd перечитать файлы сервисов.
 	if err := s.cmdSvc.DaemonReload(); err != nil {
 		s.logger.Warn().Err(err).Msg("Не удалось перезагрузить демон systemd")
 	}
 
-	// Enable service
+	// Включаем автозапуск сервиса.
 	if err := s.cmdSvc.EnableService("antiscan-ipset-restore.service"); err != nil {
 		return fmt.Errorf("failed to enable service: %w", err)
 	}

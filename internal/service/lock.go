@@ -1,3 +1,5 @@
+//go:build linux
+
 package service
 
 import (
@@ -6,8 +8,8 @@ import (
 	"syscall"
 )
 
-// AcquireLock serializes full/update/uninstall. Process exit releases the lock.
-// Never unlink the lock file: waiters may still hold the old inode.
+// AcquireLock не даёт full, update и uninstall выполняться одновременно. Выход освобождает блокировку.
+// Файл блокировки не удаляем: другой процесс может уже держать его открытым.
 func AcquireLock() (*os.File, error) {
 	f, err := os.OpenFile("/run/rkn-guard.lock", os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {

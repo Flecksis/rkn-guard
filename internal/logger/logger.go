@@ -8,12 +8,12 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// Logger wraps zerolog.Logger
+// Logger дополняет zerolog.Logger настройками проекта.
 type Logger struct {
 	zerolog.Logger
 }
 
-// New creates a new console logger with pretty output
+// New создаёт журнал с читаемым выводом в консоль.
 func New() *Logger {
 	output := zerolog.ConsoleWriter{
 		Out:        os.Stderr,
@@ -29,7 +29,7 @@ func New() *Logger {
 	return &Logger{logger}
 }
 
-// NewWithLevel creates a logger with specific level
+// NewWithLevel создаёт журнал с указанным уровнем сообщений.
 func NewWithLevel(level string) *Logger {
 	output := zerolog.ConsoleWriter{
 		Out:        os.Stderr,
@@ -48,7 +48,7 @@ func NewWithLevel(level string) *Logger {
 	return &Logger{logger}
 }
 
-// parseLevel converts string to zerolog level
+// parseLevel преобразует название уровня в значение zerolog.
 func parseLevel(level string) zerolog.Level {
 	switch level {
 	case "debug":
@@ -66,12 +66,12 @@ func parseLevel(level string) zerolog.Level {
 	}
 }
 
-// SetGlobalLogger sets the global logger instance
+// SetGlobalLogger задаёт общий журнал приложения.
 func SetGlobalLogger(logger *Logger) {
 	log.Logger = logger.Logger
 }
 
-// Global returns the global logger
+// Global возвращает общий журнал приложения.
 func Global() *Logger {
 	return &Logger{log.Logger}
 }

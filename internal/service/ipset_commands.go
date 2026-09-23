@@ -7,13 +7,13 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// IpsetCommandService provides high-level ipset operations
+// IpsetCommandService выполняет команды управления ipset.
 type IpsetCommandService struct {
 	logger zerolog.Logger
 	cmdSvc *CommandService
 }
 
-// NewIpsetCommandService creates a new ipset command service
+// NewIpsetCommandService создаёт исполнитель команд ipset.
 func NewIpsetCommandService(logger zerolog.Logger, cmdSvc *CommandService) *IpsetCommandService {
 	return &IpsetCommandService{
 		logger: logger,
@@ -21,7 +21,7 @@ func NewIpsetCommandService(logger zerolog.Logger, cmdSvc *CommandService) *Ipse
 	}
 }
 
-// SetType represents ipset set type
+// SetType задаёт тип набора ipset.
 type SetType string
 
 const (
@@ -31,7 +31,7 @@ const (
 	SetTypeHashPort SetType = "hash:port"
 )
 
-// Family represents IP family
+// Family задаёт семейство IP-адресов.
 type Family string
 
 const (
@@ -39,18 +39,18 @@ const (
 	FamilyIPv6 Family = "inet6"
 )
 
-// CreateSetOptions contains options for creating an ipset set
+// CreateSetOptions хранит параметры нового набора.
 type CreateSetOptions struct {
 	Name     string
 	Type     SetType
 	Family   Family
 	HashSize int
 	MaxElem  int
-	Timeout  int // seconds, 0 means no timeout
+	Timeout  int // В секундах; 0 означает бессрочную запись.
 	Comment  bool
 }
 
-// Create creates a new ipset set
+// Create создаёт набор ipset.
 func (s *IpsetCommandService) Create(opts CreateSetOptions) error {
 	s.logger.Debug().
 		Str("name", opts.Name).
@@ -83,43 +83,43 @@ func (s *IpsetCommandService) Create(opts CreateSetOptions) error {
 	return s.cmdSvc.Run("ipset", args...)
 }
 
-// Destroy destroys an ipset set
+// Destroy удаляет набор.
 func (s *IpsetCommandService) Destroy(name string) error {
 	s.logger.Debug().Str("name", name).Msg("Destroying ipset set")
 	return s.cmdSvc.Run("ipset", "destroy", name)
 }
 
-// Flush flushes all entries from an ipset set
+// Flush удаляет все записи из набора.
 func (s *IpsetCommandService) Flush(name string) error {
 	s.logger.Debug().Str("name", name).Msg("Flushing ipset set")
 	return s.cmdSvc.Run("ipset", "flush", name)
 }
 
-// Add adds an entry to an ipset set
+// Add добавляет запись в набор.
 func (s *IpsetCommandService) Add(setName, entry string) error {
 	return s.cmdSvc.Run("ipset", "add", setName, entry)
 }
 
-// AddWithTimeout adds an entry to an ipset set with timeout
+// AddWithTimeout добавляет запись с ограниченным сроком действия.
 func (s *IpsetCommandService) AddWithTimeout(setName, entry string, timeout int) error {
 	return s.cmdSvc.Run("ipset", "add", setName, entry, "timeout", fmt.Sprintf("%d", timeout))
 }
 
-// AddWithComment adds an entry to an ipset set with comment
+// AddWithComment добавляет запись с комментарием.
 func (s *IpsetCommandService) AddWithComment(setName, entry, comment string) error {
 	return s.cmdSvc.Run("ipset", "add", setName, entry, "comment", comment)
 }
 
-// Delete removes an entry from an ipset set
+// Delete удаляет запись из набора.
 func (s *IpsetCommandService) Delete(setName, entry string) error {
 	return s.cmdSvc.Run("ipset", "del", setName, entry)
 }
 
-// Test tests if an entry exists in an ipset set
+// Test проверяет наличие записи в наборе.
 func (s *IpsetCommandService) Test(setName, entry string) (bool, error) {
 	err := s.cmdSvc.Run("ipset", "test", setName, entry)
 	if err != nil {
-		// ipset test returns error if entry doesn't exist
+		// Если записи нет, ipset test завершится с ошибкой.
 		if strings.Contains(err.Error(), "is NOT in set") {
 			return false, nil
 		}
@@ -128,25 +128,25 @@ func (s *IpsetCommandService) Test(setName, entry string) (bool, error) {
 	return true, nil
 }
 
-// List lists entries in an ipset set
+// List возвращает содержимое набора.
 func (s *IpsetCommandService) List(name string) (string, error) {
 	s.logger.Debug().Str("name", name).Msg("Listing ipset set")
 	return s.cmdSvc.RunOutput("ipset", "list", name)
 }
 
-// ListAll lists all ipset sets
+// ListAll возвращает все наборы.
 func (s *IpsetCommandService) ListAll() (string, error) {
 	s.logger.Debug().Msg("Listing all ipset sets")
 	return s.cmdSvc.RunOutput("ipset", "list")
 }
 
-// Exists checks if an ipset set exists
+// Exists проверяет наличие набора.
 func (s *IpsetCommandService) Exists(name string) bool {
 	_, err := s.cmdSvc.RunOutputQuiet("ipset", "list", name)
 	return err == nil
 }
 
-// Save saves ipset configuration to a file
+// Snapshot возвращает набор в формате ipset save.
 func (s *IpsetCommandService) Snapshot(name string) (string, error) {
 	return s.cmdSvc.RunOutput("ipset", "save", name)
 }
@@ -156,7 +156,7 @@ func (s *IpsetCommandService) Save(path string) error {
 	return s.cmdSvc.RunShell(fmt.Sprintf("ipset save > %s", path))
 }
 
-// SaveSet saves a specific ipset set to a file
+// SaveSet сохраняет выбранный набор в файл.
 func (s *IpsetCommandService) SaveSet(name, path string) error {
 	s.logger.Info().
 		Str("name", name).
@@ -165,19 +165,19 @@ func (s *IpsetCommandService) SaveSet(name, path string) error {
 	return s.cmdSvc.RunShell(fmt.Sprintf("ipset save %s > %s", name, path))
 }
 
-// Restore restores ipset configuration from a file
+// Restore восстанавливает наборы из файла.
 func (s *IpsetCommandService) Restore(path string) error {
 	s.logger.Info().Str("path", path).Msg("Restoring ipset configuration")
 	return s.cmdSvc.RunShell(fmt.Sprintf("ipset restore -exist < %s", path))
 }
 
-// RestoreForce restores ipset configuration from a file (overwrites existing)
+// RestoreForce восстанавливает наборы без флага пропуска существующих записей.
 func (s *IpsetCommandService) RestoreForce(path string) error {
 	s.logger.Info().Str("path", path).Msg("Force restoring ipset configuration")
 	return s.cmdSvc.RunShell(fmt.Sprintf("ipset restore < %s", path))
 }
 
-// Rename renames an ipset set
+// Rename переименовывает набор.
 func (s *IpsetCommandService) Rename(oldName, newName string) error {
 	s.logger.Info().
 		Str("old_name", oldName).
@@ -186,7 +186,7 @@ func (s *IpsetCommandService) Rename(oldName, newName string) error {
 	return s.cmdSvc.Run("ipset", "rename", oldName, newName)
 }
 
-// Swap swaps two ipset sets
+// Swap меняет содержимое двух наборов местами.
 func (s *IpsetCommandService) Swap(setName1, setName2 string) error {
 	s.logger.Info().
 		Str("set1", setName1).
@@ -195,24 +195,24 @@ func (s *IpsetCommandService) Swap(setName1, setName2 string) error {
 	return s.cmdSvc.Run("ipset", "swap", setName1, setName2)
 }
 
-// GetVersion returns ipset version
+// GetVersion возвращает версию ipset.
 func (s *IpsetCommandService) GetVersion() (string, error) {
 	return s.cmdSvc.RunOutput("ipset", "version")
 }
 
-// FlushAll flushes all ipset sets
+// FlushAll очищает все наборы.
 func (s *IpsetCommandService) FlushAll() error {
 	s.logger.Info().Msg("Flushing all ipset sets")
 	return s.cmdSvc.Run("ipset", "flush")
 }
 
-// DestroyAll destroys all ipset sets
+// DestroyAll удаляет все наборы.
 func (s *IpsetCommandService) DestroyAll() error {
 	s.logger.Info().Msg("Destroying all ipset sets")
 	return s.cmdSvc.Run("ipset", "destroy")
 }
 
-// CreateHashNet creates a hash:net type set (convenience method)
+// CreateHashNet создаёт набор типа hash:net.
 func (s *IpsetCommandService) CreateHashNet(name string, family Family, hashSize, maxElem int) error {
 	return s.Create(CreateSetOptions{
 		Name:     name,
@@ -223,7 +223,7 @@ func (s *IpsetCommandService) CreateHashNet(name string, family Family, hashSize
 	})
 }
 
-// CreateHashIP creates a hash:ip type set (convenience method)
+// CreateHashIP создаёт набор типа hash:ip.
 func (s *IpsetCommandService) CreateHashIP(name string, family Family, hashSize, maxElem int) error {
 	return s.Create(CreateSetOptions{
 		Name:     name,

@@ -9,6 +9,8 @@ Fixes the failures reported in Flecksis/rkn-guard issues #1 and #2.
 - `/etc/ipset.conf` is replaced using a flushed temporary file and rename. It contains the two managed sets; unrelated live sets are not changed.
 - `full`, `update` and `uninstall` share an exclusive `/run/rkn-guard.lock`. External firewall tools and the shell menu's manual IP additions do not participate in this lock.
 - Active UFW is reloaded, never disabled as part of applying rules. Initial enable/reload/status failures propagate to the caller. Previous UFW before files are restored on failure, and a previously active firewall is reloaded with those files; rollback errors are reported too.
+- The managed block is stored after filter chain declarations and before existing filter rules in both before files. Repeated reloads preserve first-position jumps. Other tables and rules are preserved. No new move-rules service is installed; old installations may still have the legacy service until uninstall.
+- After applying UFW, both live jumps are verified in first position without deleting/reinserting rules. Verification failures trigger configuration rollback. Rollback verifies UFW is active; if this invocation successfully enabled UFW, later verification failures reload the restored files without disabling the firewall.
 - The shell update menu reports a failed update instead of displaying success.
 
 The staging, rollback and locking approach was informed by operational work on PAVLINK's antiscanner. Infrastructure-specific allowlists and prefix-size restrictions are intentionally not hardcoded into this general-purpose upstream patch.

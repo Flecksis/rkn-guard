@@ -210,8 +210,8 @@ run_full_install() {
   assert_file_exists /etc/ipset.conf
   assert_file_exists /etc/systemd/system/antiscan-ipset-restore.service
 
-  # Logging setup in rkn-guard is best-effort. On minimal images without
-  # rsyslog directories, full still succeeds and uninstall must remain testable.
+  # Ошибка настройки журналов не прерывает full. Даже в минимальном образе
+  # без каталогов rsyslog должна оставаться возможность проверить удаление.
   if [[ -d /etc/rsyslog.d ]]; then
     if [[ -f /etc/rsyslog.d/10-iptables-scanners.conf ]]; then
       log "Logging artifacts detected: strict uninstall checks remain applicable"

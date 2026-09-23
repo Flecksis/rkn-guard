@@ -7,13 +7,13 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// IptablesCommandService provides high-level iptables/ip6tables operations
+// IptablesCommandService выполняет команды iptables и ip6tables.
 type IptablesCommandService struct {
 	logger zerolog.Logger
 	cmdSvc *CommandService
 }
 
-// NewIptablesCommandService creates a new iptables command service
+// NewIptablesCommandService создаёт исполнитель команд iptables.
 func NewIptablesCommandService(logger zerolog.Logger, cmdSvc *CommandService) *IptablesCommandService {
 	return &IptablesCommandService{
 		logger: logger,
@@ -21,7 +21,7 @@ func NewIptablesCommandService(logger zerolog.Logger, cmdSvc *CommandService) *I
 	}
 }
 
-// IPVersion represents IP version
+// IPVersion задаёт версию IP.
 type IPVersion string
 
 const (
@@ -29,7 +29,7 @@ const (
 	IPv6 IPVersion = "ipv6"
 )
 
-// Table represents iptables table
+// Table задаёт таблицу iptables.
 type Table string
 
 const (
@@ -39,7 +39,7 @@ const (
 	TableRaw    Table = "raw"
 )
 
-// Chain represents iptables chain
+// Chain задаёт цепочку iptables.
 type Chain string
 
 const (
@@ -50,7 +50,7 @@ const (
 	ChainPostRouting Chain = "POSTROUTING"
 )
 
-// Target represents iptables target
+// Target задаёт действие правила.
 type Target string
 
 const (
@@ -62,7 +62,7 @@ const (
 	TargetMasquerade Target = "MASQUERADE"
 )
 
-// RulePosition represents where to insert a rule
+// RulePosition задаёт позицию вставки правила.
 type RulePosition string
 
 const (
@@ -70,7 +70,7 @@ const (
 	PositionInsert RulePosition = "insert"
 )
 
-// getCommand returns the appropriate command for the IP version
+// getCommand выбирает iptables или ip6tables.
 func (s *IptablesCommandService) getCommand(version IPVersion) string {
 	if version == IPv6 {
 		return "ip6tables"
@@ -78,7 +78,7 @@ func (s *IptablesCommandService) getCommand(version IPVersion) string {
 	return "iptables"
 }
 
-// CreateChain creates a new chain
+// CreateChain создаёт цепочку.
 func (s *IptablesCommandService) CreateChain(version IPVersion, table Table, chainName string) error {
 	cmd := s.getCommand(version)
 	s.logger.Debug().
@@ -91,7 +91,7 @@ func (s *IptablesCommandService) CreateChain(version IPVersion, table Table, cha
 	return s.cmdSvc.Run(cmd, args...)
 }
 
-// DeleteChain deletes a chain
+// DeleteChain удаляет цепочку.
 func (s *IptablesCommandService) DeleteChain(version IPVersion, table Table, chainName string) error {
 	cmd := s.getCommand(version)
 	s.logger.Debug().
@@ -104,7 +104,7 @@ func (s *IptablesCommandService) DeleteChain(version IPVersion, table Table, cha
 	return s.cmdSvc.Run(cmd, args...)
 }
 
-// FlushChain flushes all rules from a chain
+// FlushChain удаляет все правила из цепочки.
 func (s *IptablesCommandService) FlushChain(version IPVersion, table Table, chainName string) error {
 	cmd := s.getCommand(version)
 	s.logger.Debug().
@@ -117,7 +117,7 @@ func (s *IptablesCommandService) FlushChain(version IPVersion, table Table, chai
 	return s.cmdSvc.Run(cmd, args...)
 }
 
-// FlushAll flushes all rules from all chains
+// FlushAll очищает все цепочки таблицы.
 func (s *IptablesCommandService) FlushAll(version IPVersion, table Table) error {
 	cmd := s.getCommand(version)
 	s.logger.Info().
@@ -129,7 +129,7 @@ func (s *IptablesCommandService) FlushAll(version IPVersion, table Table) error 
 	return s.cmdSvc.Run(cmd, args...)
 }
 
-// ChainExists checks if a chain exists
+// ChainExists проверяет наличие цепочки.
 func (s *IptablesCommandService) ChainExists(version IPVersion, table Table, chainName string) bool {
 	cmd := s.getCommand(version)
 	args := []string{"-t", string(table), "-L", chainName, "-n"}
@@ -137,7 +137,7 @@ func (s *IptablesCommandService) ChainExists(version IPVersion, table Table, cha
 	return err == nil
 }
 
-// RuleExists checks if a rule exists in a chain
+// RuleExists проверяет наличие правила в цепочке.
 func (s *IptablesCommandService) RuleExists(version IPVersion, table Table, chainName string, ruleSpec []string) bool {
 	cmd := s.getCommand(version)
 	args := append([]string{"-t", string(table), "-C", chainName}, ruleSpec...)
@@ -145,7 +145,7 @@ func (s *IptablesCommandService) RuleExists(version IPVersion, table Table, chai
 	return err == nil
 }
 
-// AppendRule appends a rule to a chain
+// AppendRule добавляет правило в конец цепочки.
 func (s *IptablesCommandService) AppendRule(version IPVersion, table Table, chainName string, ruleSpec []string) error {
 	cmd := s.getCommand(version)
 	s.logger.Debug().
@@ -158,7 +158,7 @@ func (s *IptablesCommandService) AppendRule(version IPVersion, table Table, chai
 	return s.cmdSvc.Run(cmd, args...)
 }
 
-// InsertRule inserts a rule at the beginning of a chain
+// InsertRule вставляет правило в указанную позицию.
 func (s *IptablesCommandService) InsertRule(version IPVersion, table Table, chainName string, position int, ruleSpec []string) error {
 	cmd := s.getCommand(version)
 	s.logger.Debug().
@@ -176,7 +176,7 @@ func (s *IptablesCommandService) InsertRule(version IPVersion, table Table, chai
 	return s.cmdSvc.Run(cmd, args...)
 }
 
-// DeleteRule deletes a rule from a chain
+// DeleteRule удаляет правило из цепочки.
 func (s *IptablesCommandService) DeleteRule(version IPVersion, table Table, chainName string, ruleSpec []string) error {
 	cmd := s.getCommand(version)
 	s.logger.Debug().
@@ -189,7 +189,7 @@ func (s *IptablesCommandService) DeleteRule(version IPVersion, table Table, chai
 	return s.cmdSvc.Run(cmd, args...)
 }
 
-// DeleteRuleByNumber deletes a rule by its number in the chain
+// DeleteRuleByNumber удаляет правило по номеру.
 func (s *IptablesCommandService) DeleteRuleByNumber(version IPVersion, table Table, chainName string, ruleNum int) error {
 	cmd := s.getCommand(version)
 	s.logger.Debug().
@@ -202,7 +202,7 @@ func (s *IptablesCommandService) DeleteRuleByNumber(version IPVersion, table Tab
 	return s.cmdSvc.Run(cmd, args...)
 }
 
-// ListChain lists all rules in a chain
+// ListChain возвращает правила цепочки.
 func (s *IptablesCommandService) ListChain(version IPVersion, table Table, chainName string) (string, error) {
 	cmd := s.getCommand(version)
 	s.logger.Debug().
@@ -215,7 +215,7 @@ func (s *IptablesCommandService) ListChain(version IPVersion, table Table, chain
 	return s.cmdSvc.RunOutput(cmd, args...)
 }
 
-// ListAllChains lists all chains in a table
+// ListAllChains возвращает цепочки таблицы.
 func (s *IptablesCommandService) ListAllChains(version IPVersion, table Table) (string, error) {
 	cmd := s.getCommand(version)
 	s.logger.Debug().
@@ -227,7 +227,7 @@ func (s *IptablesCommandService) ListAllChains(version IPVersion, table Table) (
 	return s.cmdSvc.RunOutput(cmd, args...)
 }
 
-// Save saves iptables rules to a file
+// Save сохраняет правила iptables в файл.
 func (s *IptablesCommandService) Save(version IPVersion, path string) error {
 	cmd := s.getCommand(version)
 	s.logger.Info().
@@ -238,7 +238,7 @@ func (s *IptablesCommandService) Save(version IPVersion, path string) error {
 	return s.cmdSvc.RunShell(fmt.Sprintf("%s-save > %s", cmd, path))
 }
 
-// Restore restores iptables rules from a file
+// Restore восстанавливает правила iptables из файла.
 func (s *IptablesCommandService) Restore(version IPVersion, path string) error {
 	cmd := s.getCommand(version)
 	s.logger.Info().
@@ -249,86 +249,86 @@ func (s *IptablesCommandService) Restore(version IPVersion, path string) error {
 	return s.cmdSvc.RunShell(fmt.Sprintf("%s-restore < %s", cmd, path))
 }
 
-// RuleBuilder helps build iptables rules
+// RuleBuilder собирает аргументы правила iptables.
 type RuleBuilder struct {
 	spec []string
 }
 
-// NewRuleBuilder creates a new rule builder
+// NewRuleBuilder создаёт сборщик правил.
 func NewRuleBuilder() *RuleBuilder {
 	return &RuleBuilder{
 		spec: make([]string, 0),
 	}
 }
 
-// Protocol sets the protocol
+// Protocol задаёт протокол.
 func (rb *RuleBuilder) Protocol(proto string) *RuleBuilder {
 	rb.spec = append(rb.spec, "-p", proto)
 	return rb
 }
 
-// Source sets the source address
+// Source задаёт адрес источника.
 func (rb *RuleBuilder) Source(addr string) *RuleBuilder {
 	rb.spec = append(rb.spec, "-s", addr)
 	return rb
 }
 
-// Destination sets the destination address
+// Destination задаёт адрес назначения.
 func (rb *RuleBuilder) Destination(addr string) *RuleBuilder {
 	rb.spec = append(rb.spec, "-d", addr)
 	return rb
 }
 
-// SourcePort sets the source port
+// SourcePort задаёт порт источника.
 func (rb *RuleBuilder) SourcePort(port string) *RuleBuilder {
 	rb.spec = append(rb.spec, "--sport", port)
 	return rb
 }
 
-// DestinationPort sets the destination port
+// DestinationPort задаёт порт назначения.
 func (rb *RuleBuilder) DestinationPort(port string) *RuleBuilder {
 	rb.spec = append(rb.spec, "--dport", port)
 	return rb
 }
 
-// InInterface sets the input interface
+// InInterface задаёт входной интерфейс.
 func (rb *RuleBuilder) InInterface(iface string) *RuleBuilder {
 	rb.spec = append(rb.spec, "-i", iface)
 	return rb
 }
 
-// OutInterface sets the output interface
+// OutInterface задаёт выходной интерфейс.
 func (rb *RuleBuilder) OutInterface(iface string) *RuleBuilder {
 	rb.spec = append(rb.spec, "-o", iface)
 	return rb
 }
 
-// Match adds a match module
+// Match подключает модуль проверки пакетов.
 func (rb *RuleBuilder) Match(module string, options ...string) *RuleBuilder {
 	rb.spec = append(rb.spec, "-m", module)
 	rb.spec = append(rb.spec, options...)
 	return rb
 }
 
-// MatchSet adds ipset match
+// MatchSet добавляет проверку по набору ipset.
 func (rb *RuleBuilder) MatchSet(setName, flag string) *RuleBuilder {
 	rb.spec = append(rb.spec, "-m", "set", "--match-set", setName, flag)
 	return rb
 }
 
-// MatchState adds state match
+// MatchState добавляет проверку состояния соединения.
 func (rb *RuleBuilder) MatchState(states ...string) *RuleBuilder {
 	rb.spec = append(rb.spec, "-m", "state", "--state", strings.Join(states, ","))
 	return rb
 }
 
-// MatchConntrack adds conntrack match
+// MatchConntrack добавляет проверку через conntrack.
 func (rb *RuleBuilder) MatchConntrack(states ...string) *RuleBuilder {
 	rb.spec = append(rb.spec, "-m", "conntrack", "--ctstate", strings.Join(states, ","))
 	return rb
 }
 
-// MatchLimit adds rate limiting
+// MatchLimit ограничивает частоту срабатываний.
 func (rb *RuleBuilder) MatchLimit(rate, burst string) *RuleBuilder {
 	rb.spec = append(rb.spec, "-m", "limit", "--limit", rate)
 	if burst != "" {
@@ -337,44 +337,44 @@ func (rb *RuleBuilder) MatchLimit(rate, burst string) *RuleBuilder {
 	return rb
 }
 
-// Jump sets the target/jump
+// Jump задаёт действие правила.
 func (rb *RuleBuilder) Jump(target Target) *RuleBuilder {
 	rb.spec = append(rb.spec, "-j", string(target))
 	return rb
 }
 
-// JumpChain sets jump to a custom chain
+// JumpChain задаёт переход в пользовательскую цепочку.
 func (rb *RuleBuilder) JumpChain(chainName string) *RuleBuilder {
 	rb.spec = append(rb.spec, "-j", chainName)
 	return rb
 }
 
-// LogPrefix sets log prefix
+// LogPrefix задаёт префикс записи в журнале.
 func (rb *RuleBuilder) LogPrefix(prefix string) *RuleBuilder {
 	rb.spec = append(rb.spec, "--log-prefix", prefix)
 	return rb
 }
 
-// LogLevel sets log level
+// LogLevel задаёт уровень сообщения.
 func (rb *RuleBuilder) LogLevel(level string) *RuleBuilder {
 	rb.spec = append(rb.spec, "--log-level", level)
 	return rb
 }
 
-// Comment adds a comment
+// Comment добавляет комментарий к правилу.
 func (rb *RuleBuilder) Comment(comment string) *RuleBuilder {
 	rb.spec = append(rb.spec, "-m", "comment", "--comment", comment)
 	return rb
 }
 
-// Build returns the rule specification
+// Build возвращает готовые аргументы правила.
 func (rb *RuleBuilder) Build() []string {
 	return rb.spec
 }
 
-// Helper methods for common operations
+// Готовые операции для часто используемых правил.
 
-// AddDropRuleForSet adds a DROP rule for ipset match
+// AddDropRuleForSet блокирует пакеты по набору ipset.
 func (s *IptablesCommandService) AddDropRuleForSet(version IPVersion, chainName, setName, flag string) error {
 	rule := NewRuleBuilder().
 		MatchSet(setName, flag).
@@ -383,7 +383,7 @@ func (s *IptablesCommandService) AddDropRuleForSet(version IPVersion, chainName,
 	return s.AppendRule(version, TableFilter, chainName, rule)
 }
 
-// AddLogRuleForSet adds a LOG rule for ipset match with rate limiting
+// AddLogRuleForSet записывает совпадения с набором в журнал с ограничением частоты.
 func (s *IptablesCommandService) AddLogRuleForSet(version IPVersion, chainName, setName, flag, logPrefix, rate, burst string) error {
 	rule := NewRuleBuilder().
 		MatchSet(setName, flag).
@@ -395,13 +395,13 @@ func (s *IptablesCommandService) AddLogRuleForSet(version IPVersion, chainName, 
 	return s.InsertRule(version, TableFilter, chainName, 1, rule)
 }
 
-// LinkChainToInput links a custom chain to INPUT chain
+// LinkChainToInput добавляет переход из INPUT в нашу цепочку.
 func (s *IptablesCommandService) LinkChainToInput(version IPVersion, chainName string, position int) error {
 	rule := NewRuleBuilder().JumpChain(chainName).Build()
 	return s.InsertRule(version, TableFilter, string(ChainInput), position, rule)
 }
 
-// UnlinkChainFromInput unlinks a custom chain from INPUT chain
+// UnlinkChainFromInput удаляет переход из INPUT.
 func (s *IptablesCommandService) UnlinkChainFromInput(version IPVersion, chainName string) error {
 	rule := NewRuleBuilder().JumpChain(chainName).Build()
 	return s.DeleteRule(version, TableFilter, string(ChainInput), rule)
