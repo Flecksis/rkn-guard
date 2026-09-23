@@ -3,7 +3,9 @@ package service
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -11,6 +13,8 @@ import (
 
 	"github.com/rs/zerolog"
 )
+
+const maxListBytes = 4 << 20
 
 // Downloader handles downloading subnet lists from URLs
 type Downloader struct {
@@ -30,6 +34,9 @@ func NewDownloader(logger zerolog.Logger) *Downloader {
 
 // Download fetches subnets from multiple URLs and returns a NetworkList
 func (d *Downloader) Download(urls []string) (*domain.NetworkList, error) {
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("no list URLs supplied")
+	}
 	d.logger.Info().Int("url_count", len(urls)).Msg("Началась загрузка списков подсетей")
 
 	networks := domain.NewNetworkList()
@@ -44,21 +51,32 @@ func (d *Downloader) Download(urls []string) (*domain.NetworkList, error) {
 
 		subnets, err := d.downloadSingle(url)
 		if err != nil {
-			d.logger.Warn().
-				Err(err).
-				Str("url", url).
-				Msg("Не удалось загрузить из URL, пропуск")
-			continue
+			return nil, fmt.Errorf("download %s: %w", url, err)
 		}
 
 		added := 0
-		for _, subnet := range subnets {
-			subnet = strings.TrimSpace(subnet)
+		valid := 0
+		for i, subnet := range subnets {
+			subnet, _, _ = strings.Cut(subnet, "#")
+			subnet = strings.TrimSpace(strings.TrimPrefix(subnet, "\ufeff"))
 			if subnet == "" || strings.HasPrefix(subnet, "#") {
 				continue
 			}
 
 			// Skip duplicates
+			prefix, err := netip.ParsePrefix(subnet)
+			if err != nil {
+				addr, addrErr := netip.ParseAddr(subnet)
+				if addrErr != nil || addr.Zone() != "" {
+					return nil, fmt.Errorf("%s line %d: invalid IP or CIDR %q", url, i+1, subnet)
+				}
+				prefix = netip.PrefixFrom(addr, addr.BitLen())
+			}
+			if prefix.Bits() == 0 || prefix.Addr().Is4In6() {
+				return nil, fmt.Errorf("%s line %d: unsupported prefix %q", url, i+1, subnet)
+			}
+			valid++
+			subnet = prefix.Masked().String()
 			if seenSubnets[subnet] {
 				continue
 			}
@@ -66,9 +84,15 @@ func (d *Downloader) Download(urls []string) (*domain.NetworkList, error) {
 
 			isIPv6 := isIPv6Subnet(subnet)
 			networks.Add(subnet, isIPv6)
+			if networks.IPv4Count() > 65536 || networks.IPv6Count() > 65536 {
+				return nil, fmt.Errorf("list exceeds ipset capacity (65536 per family)")
+			}
 			added++
 		}
 
+		if valid == 0 {
+			return nil, fmt.Errorf("%s: source contains no networks", url)
+		}
 		d.logger.Info().
 			Int("added", added).
 			Str("url", url).
@@ -97,13 +121,18 @@ func (d *Downloader) downloadSingle(url string) ([]string, error) {
 	}
 
 	subnets := make([]string, 0)
-	scanner := bufio.NewScanner(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxListBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxListBytes {
+		return nil, fmt.Errorf("source exceeds %d bytes", maxListBytes)
+	}
+	scanner := bufio.NewScanner(strings.NewReader(string(body)))
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line != "" {
-			subnets = append(subnets, line)
-		}
+		subnets = append(subnets, line)
 	}
 
 	if err := scanner.Err(); err != nil {
