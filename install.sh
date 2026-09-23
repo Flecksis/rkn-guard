@@ -371,7 +371,8 @@ show_menu() {
     done
 }
 
-if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+# When piped into bash, BASH_SOURCE[0] is unset even though we run directly.
+if [[ "${BASH_SOURCE[0]:-$0}" != "$0" ]]; then
     return 0
 fi
 check_root
