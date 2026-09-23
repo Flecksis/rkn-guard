@@ -9,19 +9,19 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// CommandService provides centralized command execution
+// CommandService запускает системные команды.
 type CommandService struct {
 	logger zerolog.Logger
 }
 
-// NewCommandService creates a new command service
+// NewCommandService создаёт исполнитель команд.
 func NewCommandService(logger zerolog.Logger) *CommandService {
 	return &CommandService{
 		logger: logger,
 	}
 }
 
-// Run executes a command and returns error if it fails
+// Run запускает команду и возвращает ошибку при сбое.
 func (s *CommandService) Run(name string, args ...string) error {
 	s.logger.Debug().
 		Str("command", name).
@@ -45,7 +45,7 @@ func (s *CommandService) Run(name string, args ...string) error {
 	return nil
 }
 
-// RunOutput executes a command and returns its output
+// RunOutput запускает команду и возвращает её вывод.
 func (s *CommandService) RunOutput(name string, args ...string) (string, error) {
 	s.logger.Debug().
 		Str("command", name).
@@ -67,20 +67,20 @@ func (s *CommandService) RunOutput(name string, args ...string) (string, error) 
 	return string(output), nil
 }
 
-// RunQuiet executes a command without logging errors (useful for existence checks)
+// RunQuiet не пишет ошибки в журнал; это удобно для проверок наличия.
 func (s *CommandService) RunQuiet(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	return cmd.Run()
 }
 
-// RunOutputQuiet executes a command and returns output without logging errors
+// RunOutputQuiet возвращает вывод без записи ошибок в журнал.
 func (s *CommandService) RunOutputQuiet(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
 
-// RunShell executes a shell command (sh -c "command")
+// RunShell запускает команду через sh -c.
 func (s *CommandService) RunShell(command string) error {
 	s.logger.Debug().
 		Str("shell_command", command).
@@ -89,7 +89,7 @@ func (s *CommandService) RunShell(command string) error {
 	return s.Run("sh", "-c", command)
 }
 
-// RunShellOutput executes a shell command and returns output
+// RunShellOutput запускает команду в оболочке и возвращает вывод.
 func (s *CommandService) RunShellOutput(command string) (string, error) {
 	s.logger.Debug().
 		Str("shell_command", command).
@@ -98,7 +98,7 @@ func (s *CommandService) RunShellOutput(command string) (string, error) {
 	return s.RunOutput("sh", "-c", command)
 }
 
-// CommandExists checks if a command is available in PATH
+// CommandExists ищет команду в PATH.
 func (s *CommandService) CommandExists(name string) bool {
 	_, err := exec.LookPath(name)
 	exists := err == nil
@@ -111,7 +111,7 @@ func (s *CommandService) CommandExists(name string) bool {
 	return exists
 }
 
-// IsServiceActive checks if a systemd service is active
+// IsServiceActive проверяет, запущен ли сервис systemd.
 func (s *CommandService) IsServiceActive(serviceName string) bool {
 	if !s.CommandExists("systemctl") {
 		return false
@@ -125,7 +125,7 @@ func (s *CommandService) IsServiceActive(serviceName string) bool {
 	return strings.TrimSpace(output) == "active"
 }
 
-// IsServiceEnabled checks if a systemd service is enabled
+// IsServiceEnabled проверяет, включён ли автозапуск сервиса.
 func (s *CommandService) IsServiceEnabled(serviceName string) bool {
 	if !s.CommandExists("systemctl") {
 		return false
@@ -139,7 +139,7 @@ func (s *CommandService) IsServiceEnabled(serviceName string) bool {
 	return strings.TrimSpace(output) == "enabled"
 }
 
-// EnableService enables a systemd service
+// EnableService включает автозапуск сервиса.
 func (s *CommandService) EnableService(serviceName string) error {
 	s.logger.Info().
 		Str("service", serviceName).
@@ -148,7 +148,7 @@ func (s *CommandService) EnableService(serviceName string) error {
 	return s.Run("systemctl", "enable", serviceName)
 }
 
-// StartService starts a systemd service
+// StartService запускает сервис.
 func (s *CommandService) StartService(serviceName string) error {
 	s.logger.Info().
 		Str("service", serviceName).
@@ -157,7 +157,7 @@ func (s *CommandService) StartService(serviceName string) error {
 	return s.Run("systemctl", "start", serviceName)
 }
 
-// StopService stops a systemd service
+// StopService останавливает сервис.
 func (s *CommandService) StopService(serviceName string) error {
 	s.logger.Info().
 		Str("service", serviceName).
@@ -166,7 +166,7 @@ func (s *CommandService) StopService(serviceName string) error {
 	return s.Run("systemctl", "stop", serviceName)
 }
 
-// DisableService disables a systemd service
+// DisableService отключает автозапуск сервиса.
 func (s *CommandService) DisableService(serviceName string) error {
 	s.logger.Info().
 		Str("service", serviceName).
@@ -175,7 +175,7 @@ func (s *CommandService) DisableService(serviceName string) error {
 	return s.Run("systemctl", "disable", serviceName)
 }
 
-// RestartService restarts a systemd service
+// RestartService перезапускает сервис.
 func (s *CommandService) RestartService(serviceName string) error {
 	s.logger.Info().
 		Str("service", serviceName).
@@ -184,7 +184,7 @@ func (s *CommandService) RestartService(serviceName string) error {
 	return s.Run("systemctl", "restart", serviceName)
 }
 
-// ReloadService reloads a systemd service
+// ReloadService просит сервис перечитать настройки.
 func (s *CommandService) ReloadService(serviceName string) error {
 	s.logger.Info().
 		Str("service", serviceName).
@@ -193,13 +193,13 @@ func (s *CommandService) ReloadService(serviceName string) error {
 	return s.Run("systemctl", "reload", serviceName)
 }
 
-// DaemonReload reloads systemd daemon
+// DaemonReload просит systemd перечитать файлы сервисов.
 func (s *CommandService) DaemonReload() error {
 	s.logger.Info().Msg("Reloading systemd daemon")
 	return s.Run("systemctl", "daemon-reload")
 }
 
-// IsPackageInstalled checks if a package is installed (Debian/Ubuntu)
+// IsPackageInstalled проверяет наличие пакета в Debian и Ubuntu.
 func (s *CommandService) IsPackageInstalled(packageName string) bool {
 	if !s.CommandExists("dpkg") {
 		return false
@@ -210,7 +210,7 @@ func (s *CommandService) IsPackageInstalled(packageName string) bool {
 		return false
 	}
 
-	// Check if package is installed (starts with "ii")
+	// У установленных пакетов строка начинается с ii.
 	for _, line := range strings.Split(output, "\n") {
 		if strings.HasPrefix(line, "ii") && strings.Contains(line, packageName) {
 			return true

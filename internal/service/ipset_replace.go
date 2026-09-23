@@ -18,8 +18,8 @@ type setCommands interface {
 	Snapshot(string) (string, error)
 }
 
-// Replace stages both families before touching live sets. Swaps are atomic per
-// family, not across families. On a later error we swap the old contents back.
+// Replace готовит оба новых набора до изменения рабочих. Замена атомарна для
+// каждого семейства отдельно. При последующей ошибке возвращаем старое содержимое.
 func (s *IpsetService) Replace(networks *domain.NetworkList, path string) error {
 	return replaceSets(s.ipsetCmd, networks, func(data []byte) error {
 		return atomicWriteFile(path, data, 0600)
@@ -47,7 +47,7 @@ func replaceSets(cmd setCommands, networks *domain.NetworkList, persist func([]b
 			if !committed && set.swapped {
 				if err := cmd.Swap(set.temp, set.live); err != nil {
 					result = errors.Join(result, fmt.Errorf("rollback failed; old contents retained in %s: %w", set.temp, err))
-					continue // Keep the only copy of the old contents for recovery.
+					continue // Сохраняем единственную копию старых данных для восстановления.
 				}
 			}
 			if !committed && set.created {

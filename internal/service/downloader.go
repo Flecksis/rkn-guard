@@ -16,13 +16,13 @@ import (
 
 const maxListBytes = 4 << 20
 
-// Downloader handles downloading subnet lists from URLs
+// Downloader загружает списки подсетей по URL.
 type Downloader struct {
 	logger     zerolog.Logger
 	httpClient *http.Client
 }
 
-// NewDownloader creates a new downloader service
+// NewDownloader создаёт загрузчик списков.
 func NewDownloader(logger zerolog.Logger) *Downloader {
 	return &Downloader{
 		logger: logger,
@@ -32,7 +32,7 @@ func NewDownloader(logger zerolog.Logger) *Downloader {
 	}
 }
 
-// Download fetches subnets from multiple URLs and returns a NetworkList
+// Download загружает все источники и собирает общий список подсетей.
 func (d *Downloader) Download(urls []string) (*domain.NetworkList, error) {
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("no list URLs supplied")
@@ -63,7 +63,7 @@ func (d *Downloader) Download(urls []string) (*domain.NetworkList, error) {
 				continue
 			}
 
-			// Skip duplicates
+			// Проверяем формат и убираем дубликаты.
 			prefix, err := netip.ParsePrefix(subnet)
 			if err != nil {
 				addr, addrErr := netip.ParseAddr(subnet)
@@ -108,7 +108,7 @@ func (d *Downloader) Download(urls []string) (*domain.NetworkList, error) {
 	return networks, nil
 }
 
-// downloadSingle downloads subnets from a single URL
+// downloadSingle загружает один источник.
 func (d *Downloader) downloadSingle(url string) ([]string, error) {
 	resp, err := d.httpClient.Get(url)
 	if err != nil {
@@ -142,7 +142,7 @@ func (d *Downloader) downloadSingle(url string) ([]string, error) {
 	return subnets, nil
 }
 
-// isIPv6Subnet checks if a subnet is IPv6
+// isIPv6Subnet определяет, относится ли подсеть к IPv6.
 func isIPv6Subnet(subnet string) bool {
 	return strings.Contains(subnet, ":")
 }

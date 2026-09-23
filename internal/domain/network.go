@@ -1,18 +1,18 @@
 package domain
 
-// Subnet represents a single IP subnet (CIDR notation)
+// Subnet хранит одну подсеть в записи CIDR.
 type Subnet struct {
 	CIDR   string
 	IsIPv6 bool
 }
 
-// NetworkList represents a collection of subnets grouped by version
+// NetworkList хранит отдельные списки подсетей IPv4 и IPv6.
 type NetworkList struct {
 	IPv4Subnets []string
 	IPv6Subnets []string
 }
 
-// NewNetworkList creates a new empty network list
+// NewNetworkList создаёт пустой список подсетей.
 func NewNetworkList() *NetworkList {
 	return &NetworkList{
 		IPv4Subnets: make([]string, 0),
@@ -20,7 +20,7 @@ func NewNetworkList() *NetworkList {
 	}
 }
 
-// Add adds a subnet to the appropriate list
+// Add добавляет подсеть в список нужной версии IP.
 func (nl *NetworkList) Add(subnet string, isIPv6 bool) {
 	if isIPv6 {
 		nl.IPv6Subnets = append(nl.IPv6Subnets, subnet)
@@ -29,17 +29,17 @@ func (nl *NetworkList) Add(subnet string, isIPv6 bool) {
 	}
 }
 
-// IPv4Count returns the number of IPv4 subnets
+// IPv4Count возвращает число подсетей IPv4.
 func (nl *NetworkList) IPv4Count() int {
 	return len(nl.IPv4Subnets)
 }
 
-// IPv6Count returns the number of IPv6 subnets
+// IPv6Count возвращает число подсетей IPv6.
 func (nl *NetworkList) IPv6Count() int {
 	return len(nl.IPv6Subnets)
 }
 
-// TotalCount returns the total number of subnets
+// TotalCount возвращает общее число подсетей.
 func (nl *NetworkList) TotalCount() int {
 	return nl.IPv4Count() + nl.IPv6Count()
 }

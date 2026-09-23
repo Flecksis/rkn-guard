@@ -11,26 +11,26 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// InstallerService handles package installation
+// InstallerService устанавливает системные пакеты.
 type InstallerService struct {
 	logger zerolog.Logger
 }
 
-// NewInstallerService creates a new installer service
+// NewInstallerService создаёт сервис установки.
 func NewInstallerService(logger zerolog.Logger) *InstallerService {
 	return &InstallerService{
 		logger: logger,
 	}
 }
 
-// EnsureDependencies checks and installs required packages
+// EnsureDependencies проверяет и устанавливает зависимости.
 func (s *InstallerService) EnsureDependencies() error {
 	s.logger.Info().Msg("Проверка зависимостей")
 
 	distro := getDistroType()
 	s.logger.Debug().Str("distro", distro).Msg("Detected distribution")
 
-	// Check iptables
+	// Проверяем iptables.
 	if !s.commandExists("iptables") {
 		s.logger.Info().Msg("Установка iptables")
 		if err := s.installPackage("iptables", distro); err != nil {
@@ -41,7 +41,7 @@ func (s *InstallerService) EnsureDependencies() error {
 		s.logger.Debug().Msg("iptables уже установлен")
 	}
 
-	// Check ip6tables
+	// Проверяем ip6tables.
 	if !s.commandExists("ip6tables") {
 		s.logger.Info().Msg("Установка ip6tables")
 		if err := s.installPackage("ip6tables", distro); err != nil {
@@ -52,20 +52,20 @@ func (s *InstallerService) EnsureDependencies() error {
 		s.logger.Debug().Msg("ip6tables уже установлен")
 	}
 
-	// Check ipset
+	// Проверяем ipset.
 	if !s.commandExists("ipset") {
 		s.logger.Info().Msg("Установка ipset")
 
-		// Try without update first
+		// Сначала пробуем установить пакет без обновления индекса.
 		err := s.installPackage("ipset", distro)
 		if err != nil {
-			// If failed and it's debian, try with update
+			// При ошибке в Debian обновляем индекс пакетов.
 			if distro == "debian" {
 				s.logger.Warn().Msg("Попытка обновления apt-get")
 				if err := s.runCommand("apt-get", "update"); err != nil {
 					return fmt.Errorf("failed to update apt-get: %w", err)
 				}
-				// Try again after update
+				// Повторяем установку после обновления.
 				if err := s.installPackage("ipset", distro); err != nil {
 					return fmt.Errorf("failed to install ipset: %w", err)
 				}
@@ -82,26 +82,26 @@ func (s *InstallerService) EnsureDependencies() error {
 	return nil
 }
 
-// EnsureNetfilterPersistent checks and installs netfilter-persistent if needed
+// EnsureNetfilterPersistent при необходимости устанавливает netfilter-persistent.
 func (s *InstallerService) EnsureNetfilterPersistent() error {
 	s.logger.Info().Msg("Проверка системы сохранения правил")
 
 	distro := getDistroType()
 
-	// Only for Debian-based systems
+	// Этот способ подходит только для систем на базе Debian.
 	if distro != "debian" {
 		s.logger.Debug().Msg("netfilter-persistent доступен только для Debian-based систем")
 		return nil
 	}
 
-	// Check if UFW is installed
+	// Проверяем, установлен ли UFW.
 	if s.commandExists("ufw") {
 		s.logger.Info().Msg("UFW обнаружен - netfilter-persistent не требуется")
 		s.logger.Debug().Msg("UFW будет управлять сохранением правил")
 		return nil
 	}
 
-	// Check if netfilter-persistent is already installed
+	// Проверяем, установлен ли netfilter-persistent.
 	if s.commandExists("netfilter-persistent") {
 		s.logger.Debug().Msg("netfilter-persistent уже установлен")
 		return nil
@@ -109,15 +109,15 @@ func (s *InstallerService) EnsureNetfilterPersistent() error {
 
 	s.logger.Info().Msg("UFW не найден - установка netfilter-persistent и iptables-persistent")
 
-	// Update package list first
+	// Сначала обновляем индекс пакетов.
 	if err := s.runCommand("apt-get", "update"); err != nil {
 		s.logger.Warn().Err(err).Msg("Не удалось обновить apt-get")
 	}
 
-	// Set non-interactive mode to avoid prompts
+	// Отключаем интерактивные вопросы установщика.
 	os.Setenv("DEBIAN_FRONTEND", "noninteractive")
 
-	// Install both packages
+	// Устанавливаем оба пакета.
 	if err := s.runCommand("apt-get", "install", "-y", "netfilter-persistent", "iptables-persistent"); err != nil {
 		return fmt.Errorf("failed to install netfilter-persistent: %w", err)
 	}
@@ -126,7 +126,7 @@ func (s *InstallerService) EnsureNetfilterPersistent() error {
 	return nil
 }
 
-// installPackage installs a package based on distro type
+// installPackage выбирает способ установки для дистрибутива.
 func (s *InstallerService) installPackage(pkg, distro string) error {
 	s.logger.Debug().Str("package", pkg).Str("distro", distro).Msg("Installing package")
 
@@ -140,13 +140,13 @@ func (s *InstallerService) installPackage(pkg, distro string) error {
 	}
 }
 
-// commandExists checks if a command is available in PATH
+// commandExists ищет команду в PATH.
 func (s *InstallerService) commandExists(cmd string) bool {
 	_, err := exec.LookPath(cmd)
 	return err == nil
 }
 
-// runCommand executes a command with timeout
+// runCommand запускает команду с ограничением времени.
 func (s *InstallerService) runCommand(name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -171,7 +171,7 @@ func (s *InstallerService) runCommand(name string, args ...string) error {
 	return nil
 }
 
-// getDistroType detects the Linux distribution type
+// getDistroType определяет семейство дистрибутива.
 func getDistroType() string {
 	if _, err := os.Stat("/etc/debian_version"); err == nil {
 		return "debian"
@@ -182,7 +182,7 @@ func getDistroType() string {
 	return "unknown"
 }
 
-// CheckRootPrivileges verifies the program is running as root
+// CheckRootPrivileges проверяет права root.
 func (s *InstallerService) CheckRootPrivileges() error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("this program must be run as root (use sudo)")

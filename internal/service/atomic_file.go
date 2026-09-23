@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 )
 
-// atomicWriteFile leaves the previous file untouched on any pre-rename error.
+// atomicWriteFile сохраняет старый файл при любой ошибке до переименования.
 func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	f, err := os.CreateTemp(filepath.Dir(path), ".rkn-guard-*")
 	if err != nil {
