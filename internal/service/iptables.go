@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -190,10 +191,14 @@ func (s *IptablesService) isUFWActive() bool {
 }
 
 // saveWithUFW integrates rules with UFW
-func (s *IptablesService) saveWithUFW() error {
+func (s *IptablesService) saveWithUFW() (result error) {
 	// CRITICAL: Check if SSH is allowed before enabling UFW
 	// This prevents lockout when UFW is installed but inactive
-	wasActive := s.isUFWActive()
+	status, err := s.cmdSvc.RunOutput("ufw", "status")
+	if err != nil {
+		return fmt.Errorf("cannot query UFW: %w", err)
+	}
+	wasActive := strings.Contains(status, "Status: active")
 	if !wasActive {
 		s.logger.Warn().Msg("⚠️  UFW установлен но неактивен - проверка правил SSH перед включением")
 
@@ -276,8 +281,28 @@ func (s *IptablesService) saveWithUFW() error {
 
 	contentV6, err := os.ReadFile(beforeRulesV6)
 	if err != nil {
-		s.logger.Warn().Err(err).Msg("Не удалось прочитать UFW before6.rules")
+		return fmt.Errorf("failed to read UFW before6.rules: %w", err)
 	}
+	infoV4, err := os.Stat(beforeRulesV4)
+	if err != nil {
+		return err
+	}
+	infoV6, err := os.Stat(beforeRulesV6)
+	if err != nil {
+		return err
+	}
+	applyAttempted := false
+	defer func() {
+		if result == nil {
+			return
+		}
+		result = errors.Join(result, atomicWriteFile(beforeRulesV4, contentV4, infoV4.Mode().Perm()), atomicWriteFile(beforeRulesV6, contentV6, infoV6.Mode().Perm()))
+		if applyAttempted && wasActive {
+			if err := s.cmdSvc.Run("ufw", "reload"); err != nil {
+				result = errors.Join(result, fmt.Errorf("UFW rollback reload failed: %w", err))
+			}
+		}
+	}()
 
 	// Проверяем есть ли уже наша цепочка
 	markerV4 := "# SCANNERS-BLOCK chain - managed by antiscan"
@@ -331,11 +356,8 @@ func (s *IptablesService) saveWithUFW() error {
 		return fmt.Errorf("no COMMIT found in before.rules")
 	}
 	newContent := contentV4Str[:lastCommit] + rulesV4 + contentV4Str[lastCommit:]
-	if err := os.WriteFile(beforeRulesV4+".new", []byte(newContent), 0640); err != nil {
+	if err := atomicWriteFile(beforeRulesV4, []byte(newContent), infoV4.Mode().Perm()); err != nil {
 		return fmt.Errorf("failed to write UFW rules: %w", err)
-	}
-	if err := os.Rename(beforeRulesV4+".new", beforeRulesV4); err != nil {
-		return fmt.Errorf("failed to update UFW rules: %w", err)
 	}
 	s.logger.Info().Msg("Обновлён UFW before.rules для IPv4")
 
@@ -383,37 +405,20 @@ func (s *IptablesService) saveWithUFW() error {
 
 		lastCommit := strings.LastIndex(contentV6Str, "COMMIT\n")
 		if lastCommit == -1 {
-			s.logger.Warn().Msg("COMMIT не найден в before6.rules")
+			return fmt.Errorf("no COMMIT found in before6.rules")
 		} else {
 			newContent := contentV6Str[:lastCommit] + rulesV6 + contentV6Str[lastCommit:]
-			if err := os.WriteFile(beforeRulesV6+".new", []byte(newContent), 0640); err != nil {
-				s.logger.Warn().Err(err).Msg("Не удалось записать UFW правила для IPv6")
-			} else {
-				if err := os.Rename(beforeRulesV6+".new", beforeRulesV6); err != nil {
-					s.logger.Warn().Err(err).Msg("Не удалось обновить UFW before6.rules")
-				} else {
-					s.logger.Info().Msg("Обновлён UFW before6.rules для IPv6")
-				}
+			if err := atomicWriteFile(beforeRulesV6, []byte(newContent), infoV6.Mode().Perm()); err != nil {
+				return fmt.Errorf("failed to write UFW IPv6 rules: %w", err)
 			}
 		}
 	}
 
-	// Перезагружаем UFW (используем disable+enable так как reload не всегда работает)
-	// UFW загрузит правила из before.rules автоматически
-	if !wasActive {
-		s.logger.Warn().Msg("⚠️  UFW был неактивен - включаем его сейчас (SSH проверен)")
+	// Reload an active firewall without ever disabling it.
+	applyAttempted = true
+	if err := applyUFW(s.cmdSvc, wasActive); err != nil {
+		return err
 	}
-	s.logger.Info().Msg("Перезапуск UFW для применения правил из before.rules")
-	if err := s.cmdSvc.Run("ufw", "--force", "disable"); err != nil {
-		s.logger.Warn().Err(err).Msg("Не удалось отключить UFW")
-	}
-	if err := s.cmdSvc.Run("ufw", "--force", "enable"); err != nil {
-		s.logger.Warn().Err(err).Msg("Не удалось включить UFW")
-	}
-	if !wasActive {
-		s.logger.Info().Msg("✓ UFW успешно активирован с правилами SSH")
-	}
-
 	// Перемещаем SCANNERS-BLOCK в начало ufw-before-input (позиция 1)
 	// Это необходимо чтобы блокировка срабатывала ДО правил ACCEPT для ICMP и ESTABLISHED
 	s.logger.Info().Msg("Перемещение SCANNERS-BLOCK на позицию 1 в ufw-before-input")

@@ -147,6 +147,10 @@ func (s *IpsetCommandService) Exists(name string) bool {
 }
 
 // Save saves ipset configuration to a file
+func (s *IpsetCommandService) Snapshot(name string) (string, error) {
+	return s.cmdSvc.RunOutput("ipset", "save", name)
+}
+
 func (s *IpsetCommandService) Save(path string) error {
 	s.logger.Info().Str("path", path).Msg("Saving ipset configuration")
 	return s.cmdSvc.RunShell(fmt.Sprintf("ipset save > %s", path))
