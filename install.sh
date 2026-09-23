@@ -2,7 +2,7 @@
 set -u
 
 # --- ЦВЕТА ---
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
 TG_URL="https://raw.githubusercontent.com/Flecksis/rkn-guard/master/app%20install.sh"
 MANAGER_URL="https://raw.githubusercontent.com/Flecksis/rkn-guard/master/install.sh"
@@ -330,8 +330,7 @@ show_menu() {
         printf "${CYAN}║${NC}  📊 Подсетей:       ${GREEN}%-33s${NC}${CYAN}║${NC}\n" "$IPSET_CNT"
         printf "${CYAN}║${NC}  🔥 Атак отбито:    ${RED}%-33s${NC}${CYAN}║${NC}\n" "$PKTS_CNT"
         echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
-        printf 'Версия: %s | Ветка сборки: %s\n' "$CURRENT_VERSION" "$CURRENT_BRANCH"
-        printf 'Обновления: %s\n' "$UPDATE_STATUS"
+        echo -e "  ${DIM}└─${NC} ${BOLD}${GREEN}◆ ${CURRENT_VERSION}${NC} ${DIM}·${NC} ${YELLOW}${CURRENT_BRANCH}${NC} ${DIM}· ${UPDATE_STATUS}${NC}"
         echo ""
         echo -e " ${GREEN}1.${NC} 📈 Топ атак (CSV)"
         echo -e " ${GREEN}2.${NC} 🕵 Логи IPv4 (Live)"
