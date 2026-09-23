@@ -122,47 +122,6 @@ rkn
 
 Счётчики при обновлении также **не сбрасываются**.
 
-### Установка версии `dev`
-
-`dev` — ветка для проверки изменений до выпуска стабильного релиза. Она заменяет
-только бинарник и скрипт меню: действующие наборы `ipset`, правила `iptables` и
-настройки UFW при этой замене не меняются. Не запускайте пункт `7` («Переустановить»)
-на рабочем сервере ради проверки `dev`.
-
-На сервере должны быть `git` и Go версии, указанной в `go.mod` (сейчас 1.25.3 или
-новее). Сначала сохраните копии текущих файлов, затем соберите и установите `dev`:
-
-```bash
-sudo cp -a /usr/local/bin/rkn-guard /usr/local/bin/rkn-guard.stable-backup
-sudo cp -a /opt/rkn-guard-manager.sh /opt/rkn-guard-manager.sh.stable-backup
-
-git clone --branch dev --single-branch https://github.com/Flecksis/rkn-guard.git /tmp/rkn-guard-dev
-cd /tmp/rkn-guard-dev
-go test ./...
-go build -ldflags="-X main.version=dev -X main.branch=dev" -o rkn-guard ./cmd
-
-sudo install -m 755 rkn-guard /usr/local/bin/rkn-guard
-sudo install -m 755 install.sh /opt/rkn-guard-manager.sh
-rkn
-```
-
-В шапке меню должно быть `Версия: dev | Ветка сборки: dev`. Для возврата на обычную
-версию откройте `rkn` и выберите пункт `6`: он скачает последний опубликованный
-стабильный релиз и обычное меню. Если сеть недоступна, верните резервные копии:
-
-```bash
-sudo install -m 755 /usr/local/bin/rkn-guard.stable-backup /usr/local/bin/rkn-guard
-sudo install -m 755 /opt/rkn-guard-manager.sh.stable-backup /opt/rkn-guard-manager.sh
-```
-
-Резервные копии можно удалить только после успешной проверки:
-
-```bash
-sudo rm -f /usr/local/bin/rkn-guard.stable-backup /opt/rkn-guard-manager.sh.stable-backup
-```
-
----
-
 ## ⚙️ Прямой запуск
 
 `rkn-guard` — основной бинарный файл проекта.  
