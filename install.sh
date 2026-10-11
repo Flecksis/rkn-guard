@@ -18,6 +18,11 @@ CURRENT_BRANCH="неизвестна"
 LATEST_VERSION=""
 UPDATE_STATUS="ещё не проверено"
 LAST_UPDATE_CHECK=-600
+SCHEDULE_CONFIG="/etc/rkn-guard-update.conf"
+SCHEDULE_UNIT_DIR="/etc/systemd/system"
+SCHEDULE_LOCK="/run/rkn-guard-schedule.lock"
+SCHEDULE_TIMER="rkn-guard-update.timer"
+SCHEDULE_SERVICE="rkn-guard-update.service"
 
 refresh_version_status() {
     local info old_version payload current latest newest
@@ -118,9 +123,11 @@ uninstall_process() {
 
     [[ "$confirm" != "y" ]] && return
 
+    remove_update_schedule || return 1
+
     # Используем встроенный uninstall rkn-guard (чистит UFW, ipset, iptables, systemd, rsyslog)
     if command -v rkn-guard >/dev/null 2>&1; then
-        rkn-guard uninstall --yes
+        rkn-guard uninstall --yes || return 1
     else
         # Если бинарник уже удалён, убираем оставшиеся файлы и правила вручную.
         systemctl stop antiscan-aggregate.timer antiscan-aggregate.service 2>/dev/null
@@ -248,6 +255,229 @@ update_lists() {
     sleep 2
 }
 
+# Configuration is data, never shell code. All clock times use Europe/Moscow.
+normalize_schedule() {
+    local mode=$1 value=$2 item hour minute
+    local -a times=()
+    case "$mode" in
+        off) [[ -z "$value" ]] ;;
+        interval)
+            [[ "$value" =~ ^[0-9]{1,3}$ ]] || return 1
+            (( 10#$value >= 1 && 10#$value <= 168 )) || return 1
+            printf '%d' "$((10#$value))"
+            ;;
+        msk) [[ "$value" == 06:00 ]] && printf '06:00' ;;
+        hours)
+            [[ ${#value} -le 256 && "$value" =~ ^[0-9:,[:blank:]]+$ ]] || return 1
+            value=${value//[[:blank:]]/}
+            [[ -n "$value" && "$value" != ,* && "$value" != *, && "$value" != *,,* ]] || return 1
+            IFS=',' read -r -a times <<< "$value"
+            (( ${#times[@]} <= 24 )) || return 1
+            for item in "${times[@]}"; do
+                [[ "$item" =~ ^([0-9]{1,2})(:([0-9]{2}))?$ ]] || return 1
+                hour=${BASH_REMATCH[1]}
+                minute=${BASH_REMATCH[3]:-00}
+                (( 10#$hour <= 23 && 10#$minute <= 59 )) || return 1
+            done
+            for item in "${times[@]}"; do
+                hour=${item%%:*}
+                minute=00
+                [[ "$item" == *:* ]] && minute=${item#*:}
+                printf '%02d:%02d\n' "$((10#$hour))" "$((10#$minute))"
+            done | LC_ALL=C sort -u | paste -sd, - | tr -d '\n'
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+load_update_schedule() {
+    SCHEDULE_MODE=off SCHEDULE_VALUE=''
+    local -a lines=()
+    [[ -e "$SCHEDULE_CONFIG" ]] || return 0
+    mapfile -t lines < "$SCHEDULE_CONFIG" || return 1
+    [[ ${#lines[@]} == 1 && "${lines[0]}" == *=* ]] || return 1
+    SCHEDULE_MODE=${lines[0]%%=*}
+    SCHEDULE_VALUE=$(normalize_schedule "$SCHEDULE_MODE" "${lines[0]#*=}") || return 1
+}
+
+show_update_schedule() {
+    if ! load_update_schedule; then
+        printf 'Автообновление: ошибка чтения настроек; выберите расписание заново.\n'
+        return
+    fi
+    printf 'Автообновление: '
+    case "$SCHEDULE_MODE" in
+        off) printf 'выключено' ;;
+        interval) printf 'каждые %s ч.' "$SCHEDULE_VALUE" ;;
+        hours) printf 'ежедневно в %s (МСК)' "$SCHEDULE_VALUE" ;;
+        msk) printf 'ежедневно в 06:00 (МСК)' ;;
+    esac
+    if systemctl is-active --quiet "$SCHEDULE_TIMER" 2>/dev/null; then
+        if [[ "$SCHEDULE_MODE" == off ]]; then
+            printf ' — внимание: таймер всё ещё активен'
+        elif systemctl is-enabled --quiet "$SCHEDULE_TIMER" 2>/dev/null; then
+            printf ' — активно'
+        else
+            printf ' — активно только до перезагрузки'
+        fi
+    elif [[ "$SCHEDULE_MODE" != off ]]; then
+        printf ' — таймер не активен'
+    fi
+    printf '\n'
+}
+
+write_update_units() {
+    local mode=$1 value=$2 directory=$3 time
+    local -a times=()
+    cat > "$directory/$SCHEDULE_SERVICE" <<EOF || return 1
+[Unit]
+Description=rkn-guard subnet list update
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/bin/bash $MANAGER_PATH update
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+EOF
+    {
+        printf '[Unit]\nDescription=rkn-guard subnet update schedule\n\n[Timer]\n'
+        if [[ "$mode" == interval ]]; then
+            printf 'OnActiveSec=%sh\nOnUnitActiveSec=%sh\n' "$value" "$value"
+        else
+            IFS=',' read -r -a times <<< "$value"
+            for time in "${times[@]}"; do
+                printf 'OnCalendar=*-*-* %s:00 Europe/Moscow\n' "$time"
+            done
+            # Run once on boot if a calendar event was missed while offline.
+            printf 'Persistent=true\n'
+        fi
+        printf 'AccuracySec=1s\nUnit=%s\n\n[Install]\nWantedBy=timers.target\n' "$SCHEDULE_SERVICE"
+    } > "$directory/$SCHEDULE_TIMER"
+}
+
+restore_update_schedule() {
+    local work=$1 enabled=$2 active=$3 file result=0
+    if [[ -f "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" ]]; then
+        systemctl disable --now "$SCHEDULE_TIMER" || result=1
+    fi
+    for file in "$SCHEDULE_SERVICE" "$SCHEDULE_TIMER"; do
+        if [[ -f "$work/old/$file" ]]; then
+            cp -p -- "$work/old/$file" "$SCHEDULE_UNIT_DIR/$file" || result=1
+        else
+            rm -f -- "$SCHEDULE_UNIT_DIR/$file" || result=1
+        fi
+    done
+    if [[ -f "$work/old/config" ]]; then
+        cp -p -- "$work/old/config" "$SCHEDULE_CONFIG" || result=1
+    else
+        rm -f -- "$SCHEDULE_CONFIG" || result=1
+    fi
+    systemctl daemon-reload || result=1
+    if [[ "$enabled" == yes ]]; then systemctl enable "$SCHEDULE_TIMER" || result=1; fi
+    if [[ "$active" == yes ]]; then systemctl start "$SCHEDULE_TIMER" || result=1; fi
+    (( result == 0 )) || printf 'Не удалось полностью восстановить прежнее расписание. Проверьте systemctl status %s.\n' "$SCHEDULE_TIMER" >&2
+    return "$result"
+}
+
+set_update_schedule() (
+    local mode=$1 value=$2 work file enabled=no active=no pending=no schedule_fd
+    value=$(normalize_schedule "$mode" "$value") || {
+        printf 'Неверное расписание: интервал 1–168 ч.; до 24 значений 0–23 или ЧЧ:ММ через запятую.\n' >&2
+        return 1
+    }
+    command -v flock >/dev/null && command -v systemctl >/dev/null || {
+        printf 'Для автообновления нужны systemd и flock (util-linux).\n' >&2
+        return 1
+    }
+    [[ "$mode" == off || -f "$MANAGER_PATH" ]] || {
+        printf 'Сначала установите меню в %s.\n' "$MANAGER_PATH" >&2
+        return 1
+    }
+    # This lock serializes settings only. rkn-guard itself owns the separate
+    # /run/rkn-guard.lock for update/full/uninstall; do not lock it twice.
+    exec {schedule_fd}> "$SCHEDULE_LOCK" || return 1
+    flock -n "$schedule_fd" || { printf 'Расписание уже изменяется другим процессом.\n' >&2; return 1; }
+    umask 077
+    work=$(mktemp -d "$SCHEDULE_UNIT_DIR/.rkn-update.XXXXXX") || return 1
+    trap '[[ "$pending" == no ]] || restore_update_schedule "$work" "$enabled" "$active"; rm -rf -- "$work"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 1' TERM HUP
+    mkdir "$work/old" || return 1
+    for file in "$SCHEDULE_SERVICE" "$SCHEDULE_TIMER"; do
+        if [[ -e "$SCHEDULE_UNIT_DIR/$file" ]]; then
+            cp -p -- "$SCHEDULE_UNIT_DIR/$file" "$work/old/$file" || return 1
+        fi
+    done
+    if [[ -e "$SCHEDULE_CONFIG" ]]; then cp -p -- "$SCHEDULE_CONFIG" "$work/old/config" || return 1; fi
+    systemctl is-enabled --quiet "$SCHEDULE_TIMER" 2>/dev/null && enabled=yes
+    systemctl is-active --quiet "$SCHEDULE_TIMER" 2>/dev/null && active=yes
+    printf '%s=%s\n' "$mode" "$value" > "$work/config" || return 1
+    if [[ "$mode" != off ]]; then
+        write_update_units "$mode" "$value" "$work" || return 1
+        # Reapplying the same setting must not postpone an interval timer.
+        if [[ "$enabled" == yes && "$active" == yes ]] &&
+            cmp -s "$work/config" "$SCHEDULE_CONFIG" &&
+            cmp -s "$work/$SCHEDULE_TIMER" "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" &&
+            cmp -s "$work/$SCHEDULE_SERVICE" "$SCHEDULE_UNIT_DIR/$SCHEDULE_SERVICE"; then
+            printf 'Это расписание уже включено.\n'
+            return 0
+        fi
+    fi
+    pending=yes
+    if [[ -f "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" || "$active" == yes || "$enabled" == yes ]]; then
+        systemctl disable --now "$SCHEDULE_TIMER" || return 1
+    fi
+    # Stopping a timer does not interrupt an update already in progress.
+    if [[ "$mode" != off ]]; then
+        for file in "$SCHEDULE_SERVICE" "$SCHEDULE_TIMER"; do
+            chmod 644 "$work/$file" && mv -f -- "$work/$file" "$SCHEDULE_UNIT_DIR/$file" || return 1
+        done
+        systemctl daemon-reload && systemctl enable "$SCHEDULE_TIMER" &&
+            systemctl start "$SCHEDULE_TIMER" || return 1
+    fi
+    mv -f -- "$work/config" "$SCHEDULE_CONFIG" || return 1
+    pending=no
+    printf 'Расписание сохранено.\n'
+)
+
+remove_update_schedule() {
+    [[ -e "$SCHEDULE_CONFIG" || -e "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" ]] || return 0
+    set_update_schedule off '' || return 1
+    rm -f -- "$SCHEDULE_CONFIG" "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" "$SCHEDULE_UNIT_DIR/$SCHEDULE_SERVICE" || return 1
+    systemctl daemon-reload
+}
+
+manage_updates() {
+    local action value
+    while true; do
+        printf '\n=== ОБНОВЛЕНИЕ ПОДСЕТЕЙ ===\n'
+        show_update_schedule
+        printf '%s\n' '1. Обновить сейчас' '2. Каждые N часов' \
+            '3. В заданное время по списку (МСК)' '4. Ежедневно в 06:00 (МСК)' \
+            '5. Отключить автообновление' '0. Назад'
+        read_cancellable_input -p 'Обновления — выбор: ' action || continue
+        case "$action" in
+            1) update_lists ;;
+            2)
+                read_cancellable_input -p 'Интервал в часах (1–168): ' value || continue
+                set_update_schedule interval "$value" || printf 'Не удалось применить расписание; подробности выше.\n' >&2
+                ;;
+            3)
+                read_cancellable_input -p 'Время МСК через запятую (6,12,18 или 06:00,18:30): ' value || continue
+                set_update_schedule hours "$value" || printf 'Не удалось применить расписание; подробности выше.\n' >&2
+                ;;
+            4) set_update_schedule msk 06:00 || printf 'Не удалось включить расписание.\n' >&2 ;;
+            5) set_update_schedule off '' || printf 'Не удалось отключить расписание.\n' >&2 ;;
+            0) return ;;
+            *) printf 'Неверный пункт.\n' ;;
+        esac
+    done
+}
+
 install_menu_command() {
     local temp_manager="/tmp/rkn-guard-manager.sh"
 
@@ -287,7 +517,7 @@ install_process() {
 
     echo -e "\n${BLUE}[INFO] Установка...${NC}"
     apt-get update
-    apt-get install -y curl wget rsyslog ipset ufw grep sed coreutils whois
+    apt-get install -y curl wget rsyslog ipset ufw grep sed coreutils whois util-linux tzdata
     systemctl enable --now rsyslog
 
     if command -v curl >/dev/null; then curl -fsSL "$TG_URL" | bash; else wget -qO- "$TG_URL" | bash; fi
@@ -350,7 +580,7 @@ show_menu() {
         echo -e " ${GREEN}2.${NC} 🕵 Логи IPv4 (Live)"
         echo -e " ${GREEN}3.${NC} 🕵 Логи IPv6 (Live)"
         echo -e " ${GREEN}4.${NC} 🧪 Управление IP (Ban/Unban)"
-        echo -e " ${GREEN}5.${NC} 🔄 Обновить списки (Update)"
+        echo -e " ${GREEN}5.${NC} 🔄 Обновление списков и расписание"
         echo -e " ${GREEN}6.${NC} ⬆️  Обновить rkn-guard"
         echo -e " ${GREEN}7.${NC} 🛠️  Переустановить (Reinstall)"
         echo -e " ${RED}8.${NC} 🗑️  Удалить (Uninstall)"
@@ -369,7 +599,7 @@ show_menu() {
             2) view_log "/var/log/iptables-scanners-ipv4.log" ;;
             3) view_log "/var/log/iptables-scanners-ipv6.log" ;;
             4) manage_test_ip ;;
-            5) update_lists ;;
+            5) manage_updates ;;
             6)
                 update_application
                 ;;
