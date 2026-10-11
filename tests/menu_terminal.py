@@ -4,7 +4,6 @@
 import os
 from pathlib import Path
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -88,7 +87,8 @@ class MenuHarness(unittest.TestCase):
         try:
             actual_status = self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            self.fail("Menu did not exit; possible repeated action or busy loop")
+            output = (self.root / "output").read_text(encoding="utf-8", errors="replace")
+            self.fail("Menu did not exit; possible repeated action or busy loop\n" + output[-6000:])
         output = (self.root / "output").read_text(encoding="utf-8", errors="replace")
         self.assertEqual(actual_status, status, output)
         self.assertEqual(output.count(MESSAGE), int(status == 1), output)
@@ -147,15 +147,16 @@ class LinuxTerminalTests(MenuHarness):
     def original_source(self):
         self.env["MENU_SOURCE"] = SOURCE.as_posix()
 
-    def wait_for(self, filename, text):
+    def wait_for(self, filename, text, count=1):
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            if text in (self.root / filename).read_text(encoding="utf-8", errors="replace"):
+            output = (self.root / filename).read_text(encoding="utf-8", errors="replace")
+            if output.count(text) >= count:
                 return
             if self.proc.poll() is not None:
                 break
             time.sleep(0.01)
-        self.fail(f"Menu did not reach {text!r}")
+        self.fail(f"Menu did not reach {text!r} ({count} times)\n{output[-6000:]}")
 
     def start_terminal(self):
         import fcntl
@@ -205,9 +206,12 @@ class LinuxTerminalTests(MenuHarness):
             self.wait_for("output", "Ваш выбор:")
             os.write(master, b"4\n1\n")
             self.wait_for("output", "IP: ")
-            os.kill(self.proc.pid, signal.SIGINT)
+            os.write(master, b"\x03")
             self.wait_for("output", "Отмена.")
-            os.write(master, b"0\n0\n")
+            self.wait_for("output", "Действие:", count=2)
+            os.write(master, b"0\n")
+            self.wait_for("output", "Ваш выбор:", count=2)
+            os.write(master, b"0\n")
             self.finish(0, [])
         finally:
             os.close(master)
