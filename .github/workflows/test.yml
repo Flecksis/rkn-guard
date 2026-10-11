@@ -19,3 +19,4 @@ jobs:
           BUILD_BRANCH: ${{ github.head_ref || github.ref_name }}
       - run: bash -n install.sh tests/integration/safe_updates.sh
       - run: bash tests/menu_versions.sh
+      - run: python3 tests/menu_terminal.py

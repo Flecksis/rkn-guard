@@ -94,10 +94,15 @@ check_firewall_safety() {
     fi
 }
 
+terminal_unavailable() {
+    printf 'Терминал недоступен, завершаю меню.\n' >&2
+    exit 1
+}
+
 uninstall_process() {
     echo -e "\n${RED}=== УДАЛЕНИЕ RKN-GUARD ===${NC}"
     trap 'echo -e "\nОтмена."; return' INT
-    read -p "Вы уверены? (y/N): " confirm < /dev/tty
+    read -r -p "Вы уверены? (y/N): " confirm < /dev/tty || terminal_unavailable
     trap 'exit 0' INT
 
     [[ "$confirm" != "y" ]] && return
@@ -150,13 +155,13 @@ manage_test_ip() {
         echo ""
         echo -ne "${YELLOW}👉 Действие:${NC} "
 
-        read -r action < /dev/tty || continue
+        read -r action < /dev/tty || terminal_unavailable
 
         case $action in
             1)
                 echo -e "\nВведите IP для БЛОКИРОВКИ ${YELLOW}(Ctrl+C = Отмена)${NC}:"
                 trap 'echo -e "\nОтмена."; sleep 1; continue' INT
-                read -p "IP: " ip < /dev/tty
+                read -r -p "IP: " ip < /dev/tty || terminal_unavailable
                 [[ -z "$ip" ]] && continue
 
                 OUTPUT=$(ipset add SCANNERS-BLOCK-V4 "$ip" 2>&1)
@@ -169,7 +174,7 @@ manage_test_ip() {
                 else
                     echo -e "${RED}❌ Ошибка:${NC} $OUTPUT"
                 fi
-                read -p "[Enter]..." < /dev/tty
+                read -r -p "[Enter]..." < /dev/tty || terminal_unavailable
                 ;;
             2)
                 echo -e "\n${GREEN}=== СПИСОК РУЧНЫХ БАНОВ ===${NC}"
@@ -187,7 +192,7 @@ manage_test_ip() {
 
                 echo -e "\nВведите ${CYAN}НОМЕР${NC} из списка или ${CYAN}IP${NC} вручную:"
                 trap 'echo -e "\nОтмена."; sleep 1; continue' INT
-                read -p "Выбор: " input < /dev/tty
+                read -r -p "Выбор: " input < /dev/tty || terminal_unavailable
                 [[ -z "$input" ]] && continue
 
                 TARGET_IP=""
@@ -213,7 +218,7 @@ manage_test_ip() {
                 else
                     echo -e "${RED}⚠️  Warning:${NC} $OUTPUT (Удален из списка)"
                 fi
-                read -p "[Enter]..." < /dev/tty
+                read -r -p "[Enter]..." < /dev/tty || terminal_unavailable
                 ;;
             0)
                 trap 'exit 0' INT
@@ -344,13 +349,13 @@ show_menu() {
         echo ""
 
         echo -ne "${CYAN}👉 Ваш выбор:${NC} "
-        read -r choice < /dev/tty
+        read -r choice < /dev/tty || terminal_unavailable
 
         case $choice in
             1)
                 echo -e "\n${GREEN}ТОП 20:${NC}"
                 [ -f /var/log/iptables-scanners-aggregate.csv ] && tail -20 /var/log/iptables-scanners-aggregate.csv || echo "Нет данных"
-                read -p $'\n[Enter] назад...' < /dev/tty
+                read -r -p $'\n[Enter] назад...' < /dev/tty || terminal_unavailable
                 ;;
             2) view_log "/var/log/iptables-scanners-ipv4.log" ;;
             3) view_log "/var/log/iptables-scanners-ipv6.log" ;;
