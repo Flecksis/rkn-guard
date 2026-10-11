@@ -142,11 +142,13 @@ uninstall_process() {
 
 # --- 🧪 УПРАВЛЕНИЕ IP ---
 manage_test_ip() {
+    local input_cancelled=false
     # Создаем файл списка, если нет
     touch "$MANUAL_FILE"
-    trap 'continue' INT
 
     while true; do
+        input_cancelled=false
+        trap 'input_cancelled=true' INT
         clear
         echo -e "${YELLOW}=== 🧪 УПРАВЛЕНИЕ IP ===${NC}"
         echo -e " ${RED}1.${NC} ⛔ ЗАБАНИТЬ IP (Add)"
@@ -155,13 +157,19 @@ manage_test_ip() {
         echo ""
         echo -ne "${YELLOW}👉 Действие:${NC} "
 
-        read -r action < /dev/tty || terminal_unavailable
+        read -r action < /dev/tty || {
+            [[ "$input_cancelled" == true ]] && continue
+            terminal_unavailable
+        }
 
         case $action in
             1)
                 echo -e "\nВведите IP для БЛОКИРОВКИ ${YELLOW}(Ctrl+C = Отмена)${NC}:"
-                trap 'echo -e "\nОтмена."; sleep 1; continue' INT
-                read -r -p "IP: " ip < /dev/tty || terminal_unavailable
+                trap 'echo -e "\nОтмена."; input_cancelled=true' INT
+                read -r -p "IP: " ip < /dev/tty || {
+                    [[ "$input_cancelled" == true ]] && continue
+                    terminal_unavailable
+                }
                 [[ -z "$ip" ]] && continue
 
                 OUTPUT=$(ipset add SCANNERS-BLOCK-V4 "$ip" 2>&1)
@@ -174,7 +182,10 @@ manage_test_ip() {
                 else
                     echo -e "${RED}❌ Ошибка:${NC} $OUTPUT"
                 fi
-                read -r -p "[Enter]..." < /dev/tty || terminal_unavailable
+                read -r -p "[Enter]..." < /dev/tty || {
+                    [[ "$input_cancelled" == true ]] && continue
+                    terminal_unavailable
+                }
                 ;;
             2)
                 echo -e "\n${GREEN}=== СПИСОК РУЧНЫХ БАНОВ ===${NC}"
@@ -191,8 +202,11 @@ manage_test_ip() {
                 fi
 
                 echo -e "\nВведите ${CYAN}НОМЕР${NC} из списка или ${CYAN}IP${NC} вручную:"
-                trap 'echo -e "\nОтмена."; sleep 1; continue' INT
-                read -r -p "Выбор: " input < /dev/tty || terminal_unavailable
+                trap 'echo -e "\nОтмена."; input_cancelled=true' INT
+                read -r -p "Выбор: " input < /dev/tty || {
+                    [[ "$input_cancelled" == true ]] && continue
+                    terminal_unavailable
+                }
                 [[ -z "$input" ]] && continue
 
                 TARGET_IP=""
@@ -218,7 +232,10 @@ manage_test_ip() {
                 else
                     echo -e "${RED}⚠️  Warning:${NC} $OUTPUT (Удален из списка)"
                 fi
-                read -r -p "[Enter]..." < /dev/tty || terminal_unavailable
+                read -r -p "[Enter]..." < /dev/tty || {
+                    [[ "$input_cancelled" == true ]] && continue
+                    terminal_unavailable
+                }
                 ;;
             0)
                 trap 'exit 0' INT
