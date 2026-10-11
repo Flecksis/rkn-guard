@@ -245,11 +245,15 @@ run_uninstall_without_log_removal() {
   assert_file_not_exists /etc/systemd/system/antiscan-move-rules.service
   assert_file_not_exists /etc/systemd/system/antiscan-aggregate.service
   assert_file_not_exists /etc/systemd/system/antiscan-aggregate.timer
+  assert_file_not_exists /etc/systemd/system/rkn-guard-update.timer
+  assert_file_not_exists /etc/systemd/system/rkn-guard-update.service
+  assert_file_not_exists /etc/rkn-guard-update.conf
   assert_file_not_exists /etc/rsyslog.d/10-iptables-scanners.conf
   assert_file_not_exists /etc/logrotate.d/iptables-scanners
   assert_file_not_exists /usr/local/bin/antiscan-aggregate-logs.sh
 
   assert_service_not_enabled antiscan-aggregate.timer
+  assert_service_not_enabled rkn-guard-update.timer
   assert_service_not_enabled antiscan-aggregate.service
   assert_service_not_enabled antiscan-move-rules.service
   assert_service_not_enabled antiscan-ipset-restore.service

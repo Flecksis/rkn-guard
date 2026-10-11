@@ -20,6 +20,7 @@ source "$MENU_SOURCE"
 set +e
 trap '' HUP
 MANUAL_FILE="$TEST_DIR/manual.list"
+SCHEDULE_CONFIG="$TEST_DIR/schedule.conf"
 printf '192.0.2.1\n' > "$MANUAL_FILE"
 choice=5 action=1 ip=192.0.2.99 input=192.0.2.99 confirm=y renders=0
 # Stop buggy versions deterministically instead of spinning until timeout.
@@ -38,7 +39,7 @@ rkn-guard() {
         while [[ ! -f "$TEST_DIR/resume" ]]; do command sleep 0.01; done
     fi
 }
-systemctl() { record "systemctl $*"; }
+systemctl() { return 1; }
 rm() { record "rm $*"; }
 install_process() { record install; }
 update_application() { record application-update; }
@@ -116,7 +117,11 @@ class MenuTests(MenuHarness):
         cases = [
             ("show_menu", "", []),
             ("show_menu", "1\n", []),
-            ("show_menu", "5\n", ["rkn-guard update"]),
+            ("show_menu", "5\n", []),
+            ("show_menu", "5\n1\n", ["rkn-guard update"]),
+            ("manage_updates", "", []),
+            ("manage_updates", "2\n", []),
+            ("manage_updates", "3\n", []),
             ("manage_test_ip", "", []),
             ("manage_test_ip", "1\n", []),
             ("manage_test_ip", "1\n192.0.2.2\n", ["ipset add SCANNERS-BLOCK-V4 192.0.2.2"]),
@@ -130,15 +135,15 @@ class MenuTests(MenuHarness):
                 self.mock_run(entry, data, actions=actions)
 
     def test_failed_read_does_not_use_stale_values(self):
-        for entry in ("show_menu", "manage_test_ip", "uninstall_process"):
+        for entry in ("show_menu", "manage_test_ip", "manage_updates", "uninstall_process"):
             with self.subTest(entry=entry):
                 self.mock_run(entry, FAIL_READ="1")
 
     def test_failed_open_does_not_repeat_update(self):
-        self.mock_run("show_menu", "5\n", actions=["rkn-guard update"], LOSE_TTY="1")
+        self.mock_run("show_menu", "5\n1\n", actions=["rkn-guard update"], LOSE_TTY="1")
 
     def test_normal_navigation(self):
-        self.mock_run("show_menu", "5\n4\n0\n8\nn\n0\n", status=0,
+        self.mock_run("show_menu", "5\n1\n0\n4\n0\n8\nn\n0\n", status=0,
                       actions=["rkn-guard update"])
 
 
@@ -193,7 +198,7 @@ class LinuxTerminalTests(MenuHarness):
         master = self.start_terminal()
         try:
             self.wait_for("output", "Ваш выбор:")
-            os.write(master, b"5\n")
+            os.write(master, b"5\n1\n")
             self.wait_for("actions", "rkn-guard update")
         finally:
             os.close(master)
@@ -215,6 +220,18 @@ class LinuxTerminalTests(MenuHarness):
             self.finish(0, [])
         finally:
             os.close(master)
+
+    def test_schedule_input_cancel_then_terminal_loss(self):
+        master = self.start_terminal()
+        try:
+            self.wait_for("output", "Ваш выбор:")
+            os.write(master, b"5\n2\n")
+            self.wait_for("output", "Интервал в часах (1–168):")
+            os.write(master, b"\x03")
+            self.wait_for("output", "Обновления — выбор:", count=2)
+        finally:
+            os.close(master)
+        self.finish(1, [])
 
 
 if __name__ == "__main__":
