@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real CSV/log collection in temporary files; no firewall or external network."""
+"""Проверки сбора CSV и логов во временных файлах без изменения firewall и сетевых запросов."""
 import contextlib
 import datetime as dt
 import importlib.util
@@ -132,7 +132,7 @@ class StatisticsTests(unittest.TestCase):
         rows, _ = self.collect()
         self.assertEqual(rows['v4|192.0.2.1']['count'], 2)
         self.assertEqual(rows['v4|192.0.2.2']['count'], 1)
-        # Same inode, different content of equal/larger length: prefix detects copytruncate.
+        # При том же inode и не меньшем размере смена начала файла обнаруживает copytruncate.
         self.write(self.v4, event('192.0.2.3') * 2)
         rows, _ = self.collect()
         self.assertEqual(rows['v4|192.0.2.3']['count'], 2)

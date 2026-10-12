@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Menu input regressions; all firewall commands are replaced with harmless mocks."""
+"""Проверки регрессий ввода меню; все команды firewall заменены безопасными заглушками."""
 
 import os
 from pathlib import Path
@@ -16,14 +16,14 @@ SOURCE = Path(__file__).resolve().parents[1] / "install.sh"
 MESSAGE = "Терминал недоступен, завершаю меню."
 HARNESS = r'''
 source "$MENU_SOURCE"
-# Match the installed script: nounset is enabled, errexit is not.
+# Как в установленном скрипте: nounset включён, errexit выключен.
 set +e
 trap '' HUP
 MANUAL_FILE="$TEST_DIR/manual.list"
 SCHEDULE_CONFIG="$TEST_DIR/schedule.conf"
 printf '192.0.2.1\n' > "$MANUAL_FILE"
 choice=5 action=1 ip=192.0.2.99 input=192.0.2.99 confirm=y renders=0
-# Stop buggy versions deterministically instead of spinning until timeout.
+# Принудительно останавливаем версии с зацикливанием, не дожидаясь таймаута.
 clear() { (( ++renders <= 10 )) || exit 99; }
 refresh_version_status() { :; }
 sleep() { :; }
@@ -47,8 +47,8 @@ set_update_schedule() { record "schedule $*"; }
 if [[ "${MOCK_INPUT:-0}" == 1 ]]; then
     exec 3< "$TEST_DIR/input"
     read() {
-        # A failed redirection leaves the destination unchanged. Also test
-        # this behavior for a read failure, including a stale confirmation.
+        # При сбое перенаправления переменная сохраняет прежнее значение. Проверяем
+        # то же поведение при ошибке read, включая сохранённый ответ подтверждения.
         [[ "${FAIL_READ:-0}" == 1 ]] && return 1
         builtin read "$@" <&3
     }
@@ -78,7 +78,7 @@ class MenuHarness(unittest.TestCase):
     def stop(self):
         if self.proc.poll() is None:
             if os.name == "nt":
-                # Git Bash's launcher can leave its actual shell running.
+                # Программа запуска Git Bash может оставить дочернюю оболочку работающей.
                 subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
@@ -97,8 +97,8 @@ class MenuHarness(unittest.TestCase):
         self.assertEqual((self.root / "actions").read_text().splitlines(), actions)
 
     def mock_run(self, entry, data="", status=1, actions=(), **env):
-        # Redirect /dev/tty only in this fixture to test every prompt on
-        # platforms without PTYs. Linux tests below use the original source.
+        # Только в этой копии заменяем /dev/tty для проверки всех запросов на ОС
+        # без псевдотерминалов. Проверки Linux ниже используют исходный скрипт.
         fixture = self.root / "menu.sh"
         fixture.write_text(
             SOURCE.read_text(encoding="utf-8").replace("/dev/tty", '"${TEST_TTY}"'),

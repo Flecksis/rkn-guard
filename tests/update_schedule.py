@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Schedule validation, persistence and failure recovery without touching the host."""
+"""Проверки расписания, сохранения настроек и отката при сбоях без изменения системы."""
 import os
 from pathlib import Path
 import shutil
@@ -166,8 +166,8 @@ offer_install_schedule
         self.assertEqual(self.snapshot(), {})
 
     def test_full_installer_reaches_prompt_after_success(self):
-        # Keep the install flow itself, but redirect its files and replace host
-        # commands. No packages, firewall rules or actual services are changed.
+        # Сохраняем порядок установки, заменяя пути к файлам и системные команды.
+        # Пакеты, правила firewall и реальные сервисы не изменяются.
         menu = self.root / "menu.sh"
         text = menu.read_text(encoding="utf-8").replace("/var/log", '${TEST_DIR}/logs')
         menu.write_text(text, encoding="utf-8", newline="\n")

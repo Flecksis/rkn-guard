@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Only for an ephemeral GitHub Linux runner. Never changes firewall or IP sets.
+# Только для одноразовой среды GitHub Linux. Правила firewall и наборы IP не изменяются.
 set -euo pipefail
 [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_OS:-} == Linux && $EUID == 0 ]] || {
     echo 'Run only as root on an ephemeral GitHub Linux runner.' >&2
@@ -38,7 +38,7 @@ for mode in interval hours msk local; do
 done
 set_update_schedule interval 7
 
-# Repeated starts of the same oneshot service must not create another update.
+# Повторный запуск того же одноразового сервиса не должен создавать второе обновление.
 systemctl start --no-block "$SCHEDULE_SERVICE"
 for ((i=0; i<100; i++)); do
     [[ -s "$work/actions" ]] && break
@@ -60,8 +60,8 @@ done
 remove_update_schedule
 [[ ! -e "$SCHEDULE_CONFIG" && ! -e "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" ]]
 
-# The compiled binary must reject a second operation before downloading or
-# changing anything. This is the same command invoked by manual and timed updates.
+# Бинарник должен отклонить вторую операцию до загрузки данных и любых изменений.
+# Эту же команду вызывают ручное обновление и обновление по расписанию.
 if flock -n /run/rkn-guard.lock "$RKN_TEST_BINARY" update -u http://127.0.0.1:9/list > "$work/lock.log" 2>&1; then
     echo 'Concurrent update unexpectedly succeeded' >&2
     exit 1
