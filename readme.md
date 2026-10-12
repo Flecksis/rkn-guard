@@ -248,7 +248,7 @@ rkn-guard/
 ## 🔗 Репозиторий
 
 GitHub: `github.com/Flecksis/rkn-guard`
-
+Если вы хотите помочь проекту пополните баланс в моём сервисе :) - https://t.me/X3D_vpn_bot 
 ---
 
 ## 📜 Лицензия
