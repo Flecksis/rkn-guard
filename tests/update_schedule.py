@@ -64,7 +64,8 @@ class ScheduleTests(unittest.TestCase):
     def test_input_normalization(self):
         for mode, value, expected in [
             ("off", "", ""), ("interval", "001", "1"), ("interval", "168", "168"),
-            ("msk", "06:00", "06:00"), ("hours", "18, 6,06:00,00,23:59", "00:00,06:00,18:00,23:59"),
+            ("msk", "06:00", "06:00"), ("local", "06:00", "06:00"),
+            ("hours", "18, 6,06:00,00,23:59", "00:00,06:00,18:00,23:59"),
         ]:
             with self.subTest(mode=mode, value=value):
                 output = self.run_shell('\nnormalize_schedule "$MODE" "$VALUE"', MODE=mode, VALUE=value)
@@ -76,14 +77,14 @@ class ScheduleTests(unittest.TestCase):
         cases = [("interval", x) for x in ("", "0", "169", "-1", "1.5", "999999999999", "1;id", " 6")]
         cases += [("hours", x) for x in ("", " ", "24", "-1", "6:60", "6:1", "6,,12", ",6", "6,",
                                              "6\n12", "$(touch pwned)", "6 " * 150, ",".join(["6"] * 25))]
-        cases += [("msk", "07:00"), ("off", "6"), ("unknown", "")]
+        cases += [("msk", "07:00"), ("local", "07:00"), ("off", "6"), ("unknown", "")]
         for mode, value in cases:
             with self.subTest(mode=mode, value=value):
                 self.run_shell('\nset_update_schedule "$MODE" "$VALUE"', status=1, MODE=mode, VALUE=value)
                 self.assertEqual(self.snapshot(), before)
 
     def test_all_modes_persist_switch_and_disable(self):
-        for mode, value in (("interval", "7"), ("hours", "18,6,18"), ("msk", "06:00")):
+        for mode, value in (("interval", "7"), ("hours", "18,6,18"), ("msk", "06:00"), ("local", "06:00")):
             with self.subTest(mode=mode):
                 self.run_shell('\nset_update_schedule "$MODE" "$VALUE"', MODE=mode, VALUE=value)
                 timer = (self.root / "units/rkn-guard-update.timer").read_text()
@@ -92,7 +93,11 @@ class ScheduleTests(unittest.TestCase):
                     self.assertNotIn("OnCalendar", timer)
                 else:
                     self.assertNotIn("OnActiveSec", timer)
-                    self.assertIn("OnCalendar=*-*-* 06:00:00 Europe/Moscow", timer)
+                    if mode == "local":
+                        self.assertIn("OnCalendar=*-*-* 06:00:00\n", timer)
+                        self.assertNotIn("Europe/Moscow", timer)
+                    else:
+                        self.assertIn("OnCalendar=*-*-* 06:00:00 Europe/Moscow", timer)
                     self.assertEqual(timer.count("OnCalendar="), 2 if mode == "hours" else 1)
                     self.assertIn("Persistent=true", timer)
                 self.assertEqual(len(list((self.root / "units").iterdir())), 2)
@@ -125,6 +130,72 @@ class ScheduleTests(unittest.TestCase):
     def test_first_install_failure_leaves_no_schedule(self):
         self.run_shell("\nset_update_schedule msk 06:00", status=1, FAIL_COMMAND="start")
         self.assertEqual(self.snapshot(), {})
+
+    def install_prompt(self, answer, status=0, **env):
+        (self.root / "input").write_text(answer, newline="\n")
+        return self.run_shell(r'''
+exec 3< "$TEST_DIR/input"
+read_cancellable_input() { builtin read -r "$@" <&3 || terminal_unavailable; }
+offer_install_schedule
+''', status=status, **env)
+
+    def test_install_yes_uppercase_repeated_and_invalid_input(self):
+        for answer in ("y\n", "Y\n", "maybe\ny\n"):
+            self.install_prompt(answer)
+            self.assertEqual((self.root / "schedule.conf").read_text(), "local=06:00\n")
+            timer = (self.root / "units/rkn-guard-update.timer").read_text()
+            self.assertIn("OnCalendar=*-*-* 06:00:00\n", timer)
+            self.assertNotIn("Europe/Moscow", timer)
+            self.assertEqual(len(list((self.root / "units").iterdir())), 2)
+        self.assertEqual((self.root / "commands").read_text().count("enable rkn-guard-update.timer"), 1)
+        self.assertIn("локальное время сервера", self.run_shell("\nshow_update_schedule"))
+
+    def test_install_decline_preserves_existing_settings(self):
+        for answer in ("n\n", "N\n", "\n"):
+            self.install_prompt(answer)
+            self.assertEqual(self.snapshot(), {})
+        self.run_shell("\nset_update_schedule interval 7")
+        before = self.snapshot()
+        self.install_prompt("n\n")
+        self.assertEqual(self.snapshot(), before)
+
+    def test_install_prompt_eof_and_schedule_failure(self):
+        self.install_prompt("", status=1)
+        self.assertEqual(self.snapshot(), {})
+        self.install_prompt("y\n", status=1, FAIL_COMMAND="start")
+        self.assertEqual(self.snapshot(), {})
+
+    def test_full_installer_reaches_prompt_after_success(self):
+        # Keep the install flow itself, but redirect its files and replace host
+        # commands. No packages, firewall rules or actual services are changed.
+        menu = self.root / "menu.sh"
+        text = menu.read_text(encoding="utf-8").replace("/var/log", '${TEST_DIR}/logs')
+        menu.write_text(text, encoding="utf-8", newline="\n")
+        (self.root / "input").write_text("Y\n", newline="\n")
+        self.run_shell(r'''
+exec 3< "$TEST_DIR/input"
+MANUAL_FILE="$TEST_DIR/manual.list"
+read_cancellable_input() { builtin read -r "$@" <&3 || terminal_unavailable; }
+check_firewall_safety() { :; }
+clear() { :; }
+apt-get() { :; }
+curl() { printf ':\n'; }
+install_menu_command() { :; }
+chown() { :; }
+getent() { return 1; }
+sleep() { :; }
+eval "$(declare -f systemctl | sed '1s/systemctl/mock_systemctl/')"
+systemctl() {
+    case "$*" in
+        *rsyslog*|*antiscan-aggregate*) return 0 ;;
+        *) mock_systemctl "$@" ;;
+    esac
+}
+rkn-guard() { printf '%s\n' "$*" >> "$TEST_DIR/installed"; }
+install_process
+''')
+        self.assertIn("full -u https://", (self.root / "installed").read_text())
+        self.assertEqual((self.root / "schedule.conf").read_text(), "local=06:00\n")
 
     def test_config_is_not_executed_and_status_reflects_stopped_timer(self):
         (self.root / "schedule.conf").write_text("hours=$(touch pwned)\n")
@@ -174,7 +245,7 @@ manage_updates
     @unittest.skipUnless(sys.platform.startswith("linux"), "Requires systemd-analyze")
     def test_systemd_parses_all_timer_modes_and_moscow_timezone(self):
         self.assertIsNotNone(shutil.which("systemd-analyze"))
-        for mode, value in (("interval", "7"), ("hours", "0,06:00,18:30,23:59"), ("msk", "06:00")):
+        for mode, value in (("interval", "7"), ("hours", "0,06:00,18:30,23:59"), ("msk", "06:00"), ("local", "06:00")):
             self.run_shell('\nset_update_schedule "$MODE" "$VALUE"', MODE=mode, VALUE=value)
             result = subprocess.run(["systemd-analyze", "verify", "--man=no",
                                      str(self.root / "units/rkn-guard-update.timer"),
@@ -186,6 +257,11 @@ manage_updates
                                 env=dict(os.environ, TZ="UTC"), capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("2026-10-12 03:00:00 UTC", result.stdout)
+        result = subprocess.run(["systemd-analyze", "calendar", "--base-time=2026-10-12 00:00:00 UTC",
+                                 "*-*-* 06:00:00"],
+                                env=dict(os.environ, TZ="UTC"), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("2026-10-12 06:00:00 UTC", result.stdout)
 
 
 if __name__ == "__main__":

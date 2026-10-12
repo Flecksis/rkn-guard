@@ -226,6 +226,9 @@ func (s *UninstallerService) removeArtifacts(removeLogs bool) {
 	if !removeLogs {
 		return
 	}
+	if err := removeFileIfExists("/var/lib/rkn-guard/attack-stats.json"); err != nil {
+		s.logger.Warn().Err(err).Msg("Failed to remove attack statistics state")
+	}
 
 	logFiles, err := filepath.Glob("/var/log/iptables-scanners-*")
 	if err != nil {

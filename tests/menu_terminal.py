@@ -43,6 +43,7 @@ systemctl() { return 1; }
 rm() { record "rm $*"; }
 install_process() { record install; }
 update_application() { record application-update; }
+set_update_schedule() { record "schedule $*"; }
 if [[ "${MOCK_INPUT:-0}" == 1 ]]; then
     exec 3< "$TEST_DIR/input"
     read() {
@@ -116,7 +117,7 @@ class MenuTests(MenuHarness):
     def test_eof_at_each_prompt(self):
         cases = [
             ("show_menu", "", []),
-            ("show_menu", "1\n", []),
+            ("show_menu", "1\n", ["rkn-guard stats"]),
             ("show_menu", "5\n", []),
             ("show_menu", "5\n1\n", ["rkn-guard update"]),
             ("manage_updates", "", []),
@@ -128,6 +129,7 @@ class MenuTests(MenuHarness):
             ("manage_test_ip", "2\n", []),
             ("manage_test_ip", "2\n192.0.2.1\n", ["ipset del SCANNERS-BLOCK-V4 192.0.2.1"]),
             ("uninstall_process", "", []),
+            ("offer_install_schedule", "", []),
         ]
         for entry, data, actions in cases:
             with self.subTest(entry=entry, data=data):
@@ -135,7 +137,7 @@ class MenuTests(MenuHarness):
                 self.mock_run(entry, data, actions=actions)
 
     def test_failed_read_does_not_use_stale_values(self):
-        for entry in ("show_menu", "manage_test_ip", "manage_updates", "uninstall_process"):
+        for entry in ("show_menu", "manage_test_ip", "manage_updates", "uninstall_process", "offer_install_schedule"):
             with self.subTest(entry=entry):
                 self.mock_run(entry, FAIL_READ="1")
 
