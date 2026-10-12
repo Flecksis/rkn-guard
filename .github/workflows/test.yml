@@ -21,4 +21,5 @@ jobs:
       - run: bash tests/menu_versions.sh
       - run: python3 tests/menu_terminal.py
       - run: python3 tests/update_schedule.py
+      - run: python3 tests/attack_stats.py
       - run: sudo env GITHUB_ACTIONS=true RUNNER_OS=Linux RKN_TEST_BINARY="$RUNNER_TEMP/rkn-guard" bash tests/integration/update_schedule_systemd.sh

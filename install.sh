@@ -255,7 +255,7 @@ update_lists() {
     sleep 2
 }
 
-# Configuration is data, never shell code. All clock times use Europe/Moscow.
+# Configuration is data, never shell code. The local preset follows server time.
 normalize_schedule() {
     local mode=$1 value=$2 item hour minute
     local -a times=()
@@ -266,7 +266,7 @@ normalize_schedule() {
             (( 10#$value >= 1 && 10#$value <= 168 )) || return 1
             printf '%d' "$((10#$value))"
             ;;
-        msk) [[ "$value" == 06:00 ]] && printf '06:00' ;;
+        msk|local) [[ "$value" == 06:00 ]] && printf '06:00' ;;
         hours)
             [[ ${#value} -le 256 && "$value" =~ ^[0-9:,[:blank:]]+$ ]] || return 1
             value=${value//[[:blank:]]/}
@@ -311,6 +311,7 @@ show_update_schedule() {
         interval) printf 'каждые %s ч.' "$SCHEDULE_VALUE" ;;
         hours) printf 'ежедневно в %s (МСК)' "$SCHEDULE_VALUE" ;;
         msk) printf 'ежедневно в 06:00 (МСК)' ;;
+        local) printf 'ежедневно в 06:00 (локальное время сервера)' ;;
     esac
     if systemctl is-active --quiet "$SCHEDULE_TIMER" 2>/dev/null; then
         if [[ "$SCHEDULE_MODE" == off ]]; then
@@ -350,7 +351,11 @@ EOF
         else
             IFS=',' read -r -a times <<< "$value"
             for time in "${times[@]}"; do
-                printf 'OnCalendar=*-*-* %s:00 Europe/Moscow\n' "$time"
+                if [[ "$mode" == local ]]; then
+                    printf 'OnCalendar=*-*-* %s:00\n' "$time"
+                else
+                    printf 'OnCalendar=*-*-* %s:00 Europe/Moscow\n' "$time"
+                fi
             done
             # Run once on boot if a calendar event was missed while offline.
             printf 'Persistent=true\n'
@@ -505,6 +510,11 @@ update_application() {
     fi
 
     install_menu_command
+    # New releases also refresh the collector without reapplying firewall rules.
+    if rkn-guard --help | grep -q 'setup-logging'; then
+        command -v python3 >/dev/null || apt-get install -y python3 || return 1
+        rkn-guard setup-logging || return 1
+    fi
     echo -e "${GREEN}✅ rkn-guard и меню обновлены. Счётчики атак сохранены.${NC}"
     sleep 2
 }
@@ -517,7 +527,7 @@ install_process() {
 
     echo -e "\n${BLUE}[INFO] Установка...${NC}"
     apt-get update
-    apt-get install -y curl wget rsyslog ipset ufw grep sed coreutils whois util-linux tzdata
+    apt-get install -y curl wget rsyslog ipset ufw grep sed coreutils whois util-linux tzdata python3
     systemctl enable --now rsyslog
 
     if command -v curl >/dev/null; then curl -fsSL "$TG_URL" | bash; else wget -qO- "$TG_URL" | bash; fi
@@ -545,8 +555,30 @@ install_process() {
     systemctl restart antiscan-aggregate.service 2>/dev/null || true
     systemctl restart antiscan-aggregate.timer
 
+    offer_install_schedule || return 1
+
     echo -e "\n${GREEN}✅ Установка завершена!${NC}"
     sleep 2
+}
+
+offer_install_schedule() {
+    local answer
+    while true; do
+        read_cancellable_input -p 'Включить автообновление подсетей ежедневно в 06:00 по локальному времени сервера? [y/N]: ' answer || return 0
+        case "$answer" in
+            y|Y) set_update_schedule local 06:00; return $? ;;
+            n|N|'') printf 'Автообновление не включалось; прежнее расписание, если было, сохранено.\n'; return 0 ;;
+            *) printf 'Введите y или n (Enter — нет).\n' ;;
+        esac
+    done
+}
+
+show_attack_stats() {
+    printf '\n%s\n' '=== ТОП АТАК: ВСЕ АДРЕСА ==='
+    rkn-guard stats || {
+        printf 'Не удалось обновить статистику. Проверьте python3 и журнал antiscan-aggregate.service.\n' >&2
+        return 1
+    }
 }
 
 view_log() {
@@ -592,8 +624,7 @@ show_menu() {
 
         case $choice in
             1)
-                echo -e "\n${GREEN}ТОП 20:${NC}"
-                [ -f /var/log/iptables-scanners-aggregate.csv ] && tail -20 /var/log/iptables-scanners-aggregate.csv || echo "Нет данных"
+                show_attack_stats
                 read -r -p $'\n[Enter] назад...' < /dev/tty || terminal_unavailable
                 ;;
             2) view_log "/var/log/iptables-scanners-ipv4.log" ;;
@@ -604,7 +635,6 @@ show_menu() {
                 update_application
                 ;;
             7)
-                rm -f /var/log/iptables-scanners-aggregate.csv
                 install_process
                 ;;
             8) uninstall_process ;;

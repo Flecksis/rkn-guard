@@ -28,8 +28,8 @@ echo done >> "$work/actions"
 EOF
 chmod 755 "$MANAGER_PATH"
 
-for mode in interval hours msk; do
-    case "$mode" in interval) value=7 ;; hours) value=06:00,18:30 ;; msk) value=06:00 ;; esac
+for mode in interval hours msk local; do
+    case "$mode" in interval) value=7 ;; hours) value=06:00,18:30 ;; msk|local) value=06:00 ;; esac
     set_update_schedule "$mode" "$value"
     systemctl is-enabled --quiet "$SCHEDULE_TIMER"
     systemctl is-active --quiet "$SCHEDULE_TIMER"
