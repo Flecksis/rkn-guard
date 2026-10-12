@@ -80,7 +80,7 @@ WantedBy=timers.target
     delaycompress
     missingok
     notifempty
-    create 0640 root adm
+    create 0640 syslog adm
     sharedscripts
     postrotate
         /usr/lib/rsyslog/rsyslog-rotate
