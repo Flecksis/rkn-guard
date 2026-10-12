@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Incremental attack statistics. Never truncate logs; commit counters and cursors together."""
+"""Сбор новых событий без очистки логов; счётчики и позиции чтения сохраняются вместе."""
 import argparse
 import csv
 import datetime as dt
@@ -40,7 +40,7 @@ def timestamp(value, now):
                 parsed = parsed.replace(year=now.year - 1)
         except ValueError:
             return None
-    # RFC3164 timestamps are in the server's local timezone.
+    # Время в формате RFC3164 указано в локальном часовом поясе сервера.
     return parsed.astimezone(dt.timezone.utc)
 
 
@@ -125,8 +125,8 @@ def collect(log_dir, state_path, csv_path, cache_path, lookup=True, now=None):
     visited = set()
     for family in ("v4", "v6"):
         current = log_dir / f"iptables-scanners-ip{family}.log"
-        # Finish a tracked file after logrotate renamed it. Do not replay old
-        # archives on migration: their events may already be in the imported CSV.
+        # Дочитываем отслеживаемый файл после переименования при ротации. Старые
+        # архивы при переходе не перечитываем: их события уже могли попасть в CSV.
         paths = sorted(log_dir.glob(current.name + ".*")) + [current]
         for path in paths:
             if path.suffix == ".gz":
@@ -150,7 +150,7 @@ def collect(log_dir, state_path, csv_path, cache_path, lookup=True, now=None):
                 while offset < stat.st_size:
                     raw = source.readline(stat.st_size - offset)
                     if not raw.endswith(b"\n"):
-                        break  # A writer may still be appending this record.
+                        break  # Запись этой строки ещё может продолжаться.
                     offset += len(raw)
                     line = raw.decode("utf-8", errors="replace")
                     if f"ANTISCAN-{family}:" not in line:
@@ -168,12 +168,12 @@ def collect(log_dir, state_path, csv_path, cache_path, lookup=True, now=None):
                 prefix = source.read(min(offset, 256))
                 cursors[identity] = dict(offset=offset, prefix_size=len(prefix),
                                          prefix=hashlib.sha256(prefix).hexdigest(), last_seen=now.timestamp())
-    # Retain recently renamed cursors across a rename racing with directory scan.
+    # Сохраняем недавние позиции чтения на случай переименования во время обхода каталога.
     state["cursors"] = {k: v for k, v in cursors.items()
                         if k in visited or now.timestamp() - v.get("last_seen", 0) < 8 * 86400}
     enrich(rows, cache_path, lookup, now)
-    # The authoritative commit contains BOTH counts and offsets. If CSV export
-    # fails, a retry regenerates it without counting the same log records twice.
+    # Основной файл состояния содержит и счётчики, и позиции чтения. При сбое
+    # экспорта CSV повторный запуск восстановит его без повторного подсчёта событий.
     atomic_write(state_path, json.dumps(state, ensure_ascii=False), 0o600)
     atomic_write(csv_path, csv_text(rows), 0o640)
     return rows, warnings
@@ -190,7 +190,7 @@ def enrich(rows, cache_path, lookup, now):
                 except ValueError:
                     pass
     except OSError:
-        pass  # Metadata is optional, including an unreadable legacy cache.
+        pass  # Метаданные необязательны; недоступность старого кеша не мешает сбору.
     deadline = time.monotonic() + 2
     whois = shutil.which("whois") if lookup else None
     for row in rows.values():
@@ -211,7 +211,7 @@ def enrich(rows, cache_path, lookup, now):
                 match = re.search(pattern, result.stdout, re.MULTILINE | re.IGNORECASE)
                 if match: row[field] = clean(match[1])
         except (OSError, subprocess.TimeoutExpired):
-            pass  # Missing metadata must never hide an attack or block the batch.
+            pass  # Отсутствие метаданных не должно скрывать атаку или останавливать сбор.
 
 
 def display(rows):

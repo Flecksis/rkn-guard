@@ -107,8 +107,8 @@ terminal_unavailable() {
 read_cancellable_input() {
     local previous_int_trap
     previous_int_trap=$(trap -p INT)
-    # Return from this function on Ctrl+C: continue in a read trap can leave
-    # Bash waiting for input. EOF and terminal errors must still exit.
+    # По Ctrl+C выходим из функции: continue в обработчике read может оставить
+    # Bash в ожидании ввода. При EOF и ошибке терминала завершаем меню.
     trap 'trap - INT; eval "$previous_int_trap"; printf "\nОтмена.\n"; return 130' INT
     read -r "$@" < /dev/tty || terminal_unavailable
     trap - INT
@@ -255,7 +255,7 @@ update_lists() {
     sleep 2
 }
 
-# Configuration is data, never shell code. The local preset follows server time.
+# Настройки читаем как данные, не как команды. Режим local использует время сервера.
 normalize_schedule() {
     local mode=$1 value=$2 item hour minute
     local -a times=()
@@ -357,7 +357,7 @@ EOF
                     printf 'OnCalendar=*-*-* %s:00 Europe/Moscow\n' "$time"
                 fi
             done
-            # Run once on boot if a calendar event was missed while offline.
+            # После загрузки однократно выполняем пропущенное календарное задание.
             printf 'Persistent=true\n'
         fi
         printf 'AccuracySec=1s\nUnit=%s\n\n[Install]\nWantedBy=timers.target\n' "$SCHEDULE_SERVICE"
@@ -402,8 +402,8 @@ set_update_schedule() (
         printf 'Сначала установите меню в %s.\n' "$MANAGER_PATH" >&2
         return 1
     }
-    # This lock serializes settings only. rkn-guard itself owns the separate
-    # /run/rkn-guard.lock for update/full/uninstall; do not lock it twice.
+    # Эта блокировка защищает только настройки. Для update/full/uninstall сам
+    # rkn-guard использует /run/rkn-guard.lock; повторно захватывать её нельзя.
     exec {schedule_fd}> "$SCHEDULE_LOCK" || return 1
     flock -n "$schedule_fd" || { printf 'Расписание уже изменяется другим процессом.\n' >&2; return 1; }
     umask 077
@@ -423,7 +423,7 @@ set_update_schedule() (
     printf '%s=%s\n' "$mode" "$value" > "$work/config" || return 1
     if [[ "$mode" != off ]]; then
         write_update_units "$mode" "$value" "$work" || return 1
-        # Reapplying the same setting must not postpone an interval timer.
+        # Повторное сохранение настроек не должно откладывать запуск по интервалу.
         if [[ "$enabled" == yes && "$active" == yes ]] &&
             cmp -s "$work/config" "$SCHEDULE_CONFIG" &&
             cmp -s "$work/$SCHEDULE_TIMER" "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" &&
@@ -436,7 +436,7 @@ set_update_schedule() (
     if [[ -f "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" || "$active" == yes || "$enabled" == yes ]]; then
         systemctl disable --now "$SCHEDULE_TIMER" || return 1
     fi
-    # Stopping a timer does not interrupt an update already in progress.
+    # Остановка таймера не прерывает уже начавшееся обновление.
     if [[ "$mode" != off ]]; then
         for file in "$SCHEDULE_SERVICE" "$SCHEDULE_TIMER"; do
             chmod 644 "$work/$file" && mv -f -- "$work/$file" "$SCHEDULE_UNIT_DIR/$file" || return 1
@@ -510,7 +510,7 @@ update_application() {
     fi
 
     install_menu_command
-    # New releases also refresh the collector without reapplying firewall rules.
+    # Новые версии также обновляют сборщик без повторного применения правил firewall.
     if rkn-guard --help | grep -q 'setup-logging'; then
         command -v python3 >/dev/null || apt-get install -y python3 || return 1
         rkn-guard setup-logging || return 1
@@ -644,7 +644,7 @@ show_menu() {
     done
 }
 
-# When piped into bash, BASH_SOURCE[0] is unset even though we run directly.
+# При передаче скрипта через конвейер в bash переменная BASH_SOURCE[0] не задана.
 if [[ "${BASH_SOURCE[0]:-$0}" != "$0" ]]; then
     return 0
 fi

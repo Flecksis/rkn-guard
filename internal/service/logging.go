@@ -68,8 +68,8 @@ func (s *LoggingService) Setup() error {
 	return nil
 }
 
-// Refresh waits for the old collector to finish before replacing its script.
-// In particular, do not kill the legacy collector after it has truncated logs.
+// Refresh дожидается завершения старого сборщика перед заменой его скрипта.
+// Старый сборщик нельзя прерывать после того, как он уже очистил логи.
 func (s *LoggingService) Refresh() error {
 	if _, err := exec.LookPath("python3"); err != nil {
 		return err
