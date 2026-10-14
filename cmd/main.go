@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -42,6 +43,7 @@ func main() {
 	}
 
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+	rootCmd.PersistentFlags().StringVar(&sourcesFile, "sources-file", service.SourcesPath, "Файл настроек и проверенных копий списков")
 
 	fullCmd := &cobra.Command{
 		Use:   "full",
@@ -51,6 +53,7 @@ func main() {
 	}
 	fullCmd.Flags().StringSliceVarP(&urls, "urls", "u", []string{}, "Список URL для скачивания подсетей")
 	fullCmd.Flags().BoolVarP(&enableLogging, "enable-logging", "l", false, "Включить логирование заблокированных подключений")
+	fullCmd.Flags().BoolVar(&managedLists, "managed-lists", false, "Учесть дополнительные списки и сохранённые копии источников")
 	fullCmd.MarkFlagRequired("urls")
 
 	updateCmd := &cobra.Command{
@@ -60,6 +63,7 @@ func main() {
 		Run:   runUpdate,
 	}
 	updateCmd.Flags().StringSliceVarP(&urls, "urls", "u", []string{}, "Список URL для скачивания подсетей")
+	updateCmd.Flags().BoolVar(&managedLists, "managed-lists", false, "Учесть дополнительные списки и сохранённые копии источников")
 	updateCmd.MarkFlagRequired("urls")
 
 	uninstallCmd := &cobra.Command{
@@ -74,6 +78,26 @@ func main() {
 	rootCmd.AddCommand(fullCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(uninstallCmd)
+	rootCmd.AddCommand(newSourcesCommand())
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "stats",
+		Short: "Обновить статистику и показать все зарегистрированные адреса",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			process := exec.Command("python3", "-c", service.AggregateLogsScriptTemplate, "--display")
+			process.Stdout, process.Stderr = os.Stdout, os.Stderr
+			return process.Run()
+		},
+	})
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "setup-logging",
+		Short: "Обновить сборщик статистики без изменения правил firewall",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := service.NewInstallerService(log.Logger).CheckRootPrivileges(); err != nil {
+				return err
+			}
+			return service.NewLoggingService(log.Logger).Refresh()
+		},
+	})
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "build-info",
 		Short: "Показать версию и ветку сборки",
@@ -146,7 +170,7 @@ func runFull(cmd *cobra.Command, args []string) {
 	}
 
 	// Загружаем списки подсетей.
-	networks, err := downloader.Download(urls)
+	networks, _, err := downloadConfiguredLists(downloader)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to download subnets")
 	}
@@ -163,7 +187,7 @@ func runFull(cmd *cobra.Command, args []string) {
 
 	// Настраиваем журнал, если он включён.
 	if enableLogging {
-		if err := loggingSvc.Setup(); err != nil {
+		if err := loggingSvc.Refresh(); err != nil {
 			log.Warn().Err(err).Msg("Failed to setup logging configuration")
 		}
 	}
@@ -205,7 +229,7 @@ func runUpdate(cmd *cobra.Command, args []string) {
 		log.Fatal().Msg("This program must be run as root (use sudo)")
 	}
 
-	networks, err := downloader.Download(urls)
+	networks, warnings, err := downloadConfiguredLists(downloader)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to download subnets")
 	}
@@ -214,6 +238,10 @@ func runUpdate(cmd *cobra.Command, args []string) {
 	}
 
 	log.Info().Msg("Списки обновлены, счётчики атак сохранены")
+	if len(warnings) > 0 {
+		log.Warn().Int("sources_with_errors", len(warnings)).Msg("Обновление завершено с ошибками источников; подробности выше")
+		os.Exit(2)
+	}
 }
 
 func runUninstall(cmd *cobra.Command, args []string) {

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -22,6 +24,9 @@ func NewLoggingService(logger zerolog.Logger) *LoggingService {
 
 // Setup настраивает rsyslog, ротацию и сбор статистики.
 func (s *LoggingService) Setup() error {
+	if _, err := exec.LookPath("python3"); err != nil {
+		return fmt.Errorf("statistics collector requires python3: %w", err)
+	}
 	s.logger.Info().Msg("Настройка логирования")
 
 	// Создаём настройки rsyslog.
@@ -61,6 +66,37 @@ func (s *LoggingService) Setup() error {
 	s.logger.Info().Msg("  Проверить статус: systemctl status antiscan-aggregate.timer")
 
 	return nil
+}
+
+// Refresh дожидается завершения старого сборщика перед заменой его скрипта.
+// Старый сборщик нельзя прерывать после того, как он уже очистил логи.
+func (s *LoggingService) Refresh() error {
+	if _, err := exec.LookPath("python3"); err != nil {
+		return err
+	}
+	if _, err := os.Stat(AggregateLogsTimerPath); os.IsNotExist(err) {
+		return s.Setup()
+	}
+	if err := exec.Command("systemctl", "stop", "antiscan-aggregate.timer").Run(); err != nil {
+		return err
+	}
+	defer exec.Command("systemctl", "start", "antiscan-aggregate.timer").Run()
+	deadline := time.Now().Add(5 * time.Minute)
+	for {
+		output, err := exec.Command("systemctl", "show", "--property=ActiveState", "--value", "antiscan-aggregate.service").Output()
+		if err != nil {
+			return err
+		}
+		state := strings.TrimSpace(string(output))
+		if state != "active" && state != "activating" && state != "deactivating" {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("old statistics collector is still running; retry setup-logging later")
+		}
+		time.Sleep(time.Second)
+	}
+	return s.Setup()
 }
 
 // setupRsyslog создаёт настройки rsyslog.

@@ -18,6 +18,12 @@ CURRENT_BRANCH="неизвестна"
 LATEST_VERSION=""
 UPDATE_STATUS="ещё не проверено"
 LAST_UPDATE_CHECK=-600
+SCHEDULE_CONFIG="/etc/rkn-guard-update.conf"
+SCHEDULE_UNIT_DIR="/etc/systemd/system"
+SCHEDULE_LOCK="/run/rkn-guard-schedule.lock"
+SCHEDULE_TIMER="rkn-guard-update.timer"
+SCHEDULE_SERVICE="rkn-guard-update.service"
+SOURCES_FILE="/var/lib/rkn-guard/sources.json"
 
 refresh_version_status() {
     local info old_version payload current latest newest
@@ -94,17 +100,35 @@ check_firewall_safety() {
     fi
 }
 
+terminal_unavailable() {
+    printf 'Терминал недоступен, завершаю меню.\n' >&2
+    exit 1
+}
+
+read_cancellable_input() {
+    local previous_int_trap
+    previous_int_trap=$(trap -p INT)
+    # По Ctrl+C выходим из функции: continue в обработчике read может оставить
+    # Bash в ожидании ввода. При EOF и ошибке терминала завершаем меню.
+    trap 'trap - INT; eval "$previous_int_trap"; printf "\nОтмена.\n"; return 130' INT
+    read -r "$@" < /dev/tty || terminal_unavailable
+    trap - INT
+    eval "$previous_int_trap"
+}
+
 uninstall_process() {
     echo -e "\n${RED}=== УДАЛЕНИЕ RKN-GUARD ===${NC}"
     trap 'echo -e "\nОтмена."; return' INT
-    read -p "Вы уверены? (y/N): " confirm < /dev/tty
+    read -r -p "Вы уверены? (y/N): " confirm < /dev/tty || terminal_unavailable
     trap 'exit 0' INT
 
     [[ "$confirm" != "y" ]] && return
 
+    remove_update_schedule || return 1
+
     # Используем встроенный uninstall rkn-guard (чистит UFW, ipset, iptables, systemd, rsyslog)
     if command -v rkn-guard >/dev/null 2>&1; then
-        rkn-guard uninstall --yes
+        rkn-guard uninstall --yes || return 1
     else
         # Если бинарник уже удалён, убираем оставшиеся файлы и правила вручную.
         systemctl stop antiscan-aggregate.timer antiscan-aggregate.service 2>/dev/null
@@ -150,13 +174,12 @@ manage_test_ip() {
         echo ""
         echo -ne "${YELLOW}👉 Действие:${NC} "
 
-        read -r action < /dev/tty || continue
+        read_cancellable_input action || continue
 
         case $action in
             1)
                 echo -e "\nВведите IP для БЛОКИРОВКИ ${YELLOW}(Ctrl+C = Отмена)${NC}:"
-                trap 'echo -e "\nОтмена."; sleep 1; continue' INT
-                read -p "IP: " ip < /dev/tty
+                read_cancellable_input -p "IP: " ip || continue
                 [[ -z "$ip" ]] && continue
 
                 OUTPUT=$(ipset add SCANNERS-BLOCK-V4 "$ip" 2>&1)
@@ -169,7 +192,7 @@ manage_test_ip() {
                 else
                     echo -e "${RED}❌ Ошибка:${NC} $OUTPUT"
                 fi
-                read -p "[Enter]..." < /dev/tty
+                read_cancellable_input -p "[Enter]..." || continue
                 ;;
             2)
                 echo -e "\n${GREEN}=== СПИСОК РУЧНЫХ БАНОВ ===${NC}"
@@ -186,8 +209,7 @@ manage_test_ip() {
                 fi
 
                 echo -e "\nВведите ${CYAN}НОМЕР${NC} из списка или ${CYAN}IP${NC} вручную:"
-                trap 'echo -e "\nОтмена."; sleep 1; continue' INT
-                read -p "Выбор: " input < /dev/tty
+                read_cancellable_input -p "Выбор: " input || continue
                 [[ -z "$input" ]] && continue
 
                 TARGET_IP=""
@@ -213,7 +235,7 @@ manage_test_ip() {
                 else
                     echo -e "${RED}⚠️  Warning:${NC} $OUTPUT (Удален из списка)"
                 fi
-                read -p "[Enter]..." < /dev/tty
+                read_cancellable_input -p "[Enter]..." || continue
                 ;;
             0)
                 trap 'exit 0' INT
@@ -225,13 +247,281 @@ manage_test_ip() {
 }
 
 update_lists() {
+    local result=0
     echo -e "\n${CYAN}🔄 Обновление списков...${NC}"
-    if ! rkn-guard update -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA"; then
+    rkn-guard update -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" \
+        --managed-lists --sources-file "$SOURCES_FILE" || result=$?
+    if (( result == 2 )); then
+        printf 'Обновление завершено с ошибками источников. Для них взяты последние корректные данные, если они есть; подробности выше.\n' >&2
+        return 2
+    elif (( result != 0 )); then
         echo -e "${RED}❌ Обновление не выполнено. Проверьте сообщения об ошибках.${NC}" >&2
         return 1
     fi
     echo -e "${GREEN}✅ Готово!${NC}"
     sleep 2
+}
+
+source_command() {
+    rkn-guard sources --sources-file "$SOURCES_FILE" \
+        --base-url "$LIST_GOV" --base-url "$LIST_SCAN" --base-url "$LIST_SKIPA" "$@"
+}
+
+manage_extra_lists() {
+    local action value operation
+    while true; do
+        printf '\n=== Доп списки подсетей ===\n'
+        source_command list || { printf 'Не удалось прочитать настройки дополнительных списков.\n' >&2; return 1; }
+        printf '\nОсновные списки сохраняются, skipa.list уже входит в их число.\n'
+        printf 'Не рекомендуется\n'
+        printf '%s\n' '1. Добавить список по URL (сначала выключен)' '2. Включить список' \
+            '3. Отключить список' '4. Удалить список' '0. Назад'
+        read_cancellable_input -p 'Доп списки — выбор: ' action || continue
+        case "$action" in
+            1)
+                read_cancellable_input -p 'URL текстового списка CIDR: ' value || continue
+                source_command add "$value" || printf 'Не удалось добавить список; настройки остальных сохранены.\n' >&2
+                ;;
+            2|3|4)
+                read_cancellable_input -p 'Номер списка: ' value || continue
+                [[ "$value" =~ ^[1-9][0-9]{0,8}$ ]] || { printf 'Введите номер из списка.\n'; continue; }
+                case "$action" in 2) operation=enable ;; 3) operation=disable ;; 4) operation=remove ;; esac
+                if source_command "$operation" "$value"; then
+                    update_lists || printf 'Настройки сохранены. Проверьте сообщения выше; следующий запуск повторит обновление.\n' >&2
+                fi
+                ;;
+            0) return 0 ;;
+            *) printf 'Неверный пункт.\n' ;;
+        esac
+    done
+}
+
+# Настройки читаем как данные, не как команды. Режим local использует время сервера.
+normalize_schedule() {
+    local mode=$1 value=$2 item hour minute
+    local -a times=()
+    case "$mode" in
+        off) [[ -z "$value" ]] ;;
+        interval)
+            [[ "$value" =~ ^[0-9]{1,3}$ ]] || return 1
+            (( 10#$value >= 1 && 10#$value <= 168 )) || return 1
+            printf '%d' "$((10#$value))"
+            ;;
+        msk|local) [[ "$value" == 06:00 ]] && printf '06:00' ;;
+        hours)
+            [[ ${#value} -le 256 && "$value" =~ ^[0-9:,[:blank:]]+$ ]] || return 1
+            value=${value//[[:blank:]]/}
+            [[ -n "$value" && "$value" != ,* && "$value" != *, && "$value" != *,,* ]] || return 1
+            IFS=',' read -r -a times <<< "$value"
+            (( ${#times[@]} <= 24 )) || return 1
+            for item in "${times[@]}"; do
+                [[ "$item" =~ ^([0-9]{1,2})(:([0-9]{2}))?$ ]] || return 1
+                hour=${BASH_REMATCH[1]}
+                minute=${BASH_REMATCH[3]:-00}
+                (( 10#$hour <= 23 && 10#$minute <= 59 )) || return 1
+            done
+            for item in "${times[@]}"; do
+                hour=${item%%:*}
+                minute=00
+                [[ "$item" == *:* ]] && minute=${item#*:}
+                printf '%02d:%02d\n' "$((10#$hour))" "$((10#$minute))"
+            done | LC_ALL=C sort -u | paste -sd, - | tr -d '\n'
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+load_update_schedule() {
+    SCHEDULE_MODE=off SCHEDULE_VALUE=''
+    local -a lines=()
+    [[ -e "$SCHEDULE_CONFIG" ]] || return 0
+    mapfile -t lines < "$SCHEDULE_CONFIG" || return 1
+    [[ ${#lines[@]} == 1 && "${lines[0]}" == *=* ]] || return 1
+    SCHEDULE_MODE=${lines[0]%%=*}
+    SCHEDULE_VALUE=$(normalize_schedule "$SCHEDULE_MODE" "${lines[0]#*=}") || return 1
+}
+
+show_update_schedule() {
+    if ! load_update_schedule; then
+        printf 'Автообновление: ошибка чтения настроек; выберите расписание заново.\n'
+        return
+    fi
+    printf 'Автообновление: '
+    case "$SCHEDULE_MODE" in
+        off) printf 'выключено' ;;
+        interval) printf 'каждые %s ч.' "$SCHEDULE_VALUE" ;;
+        hours) printf 'ежедневно в %s (МСК)' "$SCHEDULE_VALUE" ;;
+        msk) printf 'ежедневно в 06:00 (МСК)' ;;
+        local) printf 'ежедневно в 06:00 (локальное время сервера)' ;;
+    esac
+    if systemctl is-active --quiet "$SCHEDULE_TIMER" 2>/dev/null; then
+        if [[ "$SCHEDULE_MODE" == off ]]; then
+            printf ' — внимание: таймер всё ещё активен'
+        elif systemctl is-enabled --quiet "$SCHEDULE_TIMER" 2>/dev/null; then
+            printf ' — активно'
+        else
+            printf ' — активно только до перезагрузки'
+        fi
+    elif [[ "$SCHEDULE_MODE" != off ]]; then
+        printf ' — таймер не активен'
+    fi
+    printf '\n'
+}
+
+write_update_units() {
+    local mode=$1 value=$2 directory=$3 time
+    local -a times=()
+    cat > "$directory/$SCHEDULE_SERVICE" <<EOF || return 1
+[Unit]
+Description=rkn-guard subnet list update
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/bin/bash $MANAGER_PATH update
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+EOF
+    {
+        printf '[Unit]\nDescription=rkn-guard subnet update schedule\n\n[Timer]\n'
+        if [[ "$mode" == interval ]]; then
+            printf 'OnActiveSec=%sh\nOnUnitActiveSec=%sh\n' "$value" "$value"
+        else
+            IFS=',' read -r -a times <<< "$value"
+            for time in "${times[@]}"; do
+                if [[ "$mode" == local ]]; then
+                    printf 'OnCalendar=*-*-* %s:00\n' "$time"
+                else
+                    printf 'OnCalendar=*-*-* %s:00 Europe/Moscow\n' "$time"
+                fi
+            done
+            # После загрузки однократно выполняем пропущенное календарное задание.
+            printf 'Persistent=true\n'
+        fi
+        printf 'AccuracySec=1s\nUnit=%s\n\n[Install]\nWantedBy=timers.target\n' "$SCHEDULE_SERVICE"
+    } > "$directory/$SCHEDULE_TIMER"
+}
+
+restore_update_schedule() {
+    local work=$1 enabled=$2 active=$3 file result=0
+    if [[ -f "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" ]]; then
+        systemctl disable --now "$SCHEDULE_TIMER" || result=1
+    fi
+    for file in "$SCHEDULE_SERVICE" "$SCHEDULE_TIMER"; do
+        if [[ -f "$work/old/$file" ]]; then
+            cp -p -- "$work/old/$file" "$SCHEDULE_UNIT_DIR/$file" || result=1
+        else
+            rm -f -- "$SCHEDULE_UNIT_DIR/$file" || result=1
+        fi
+    done
+    if [[ -f "$work/old/config" ]]; then
+        cp -p -- "$work/old/config" "$SCHEDULE_CONFIG" || result=1
+    else
+        rm -f -- "$SCHEDULE_CONFIG" || result=1
+    fi
+    systemctl daemon-reload || result=1
+    if [[ "$enabled" == yes ]]; then systemctl enable "$SCHEDULE_TIMER" || result=1; fi
+    if [[ "$active" == yes ]]; then systemctl start "$SCHEDULE_TIMER" || result=1; fi
+    (( result == 0 )) || printf 'Не удалось полностью восстановить прежнее расписание. Проверьте systemctl status %s.\n' "$SCHEDULE_TIMER" >&2
+    return "$result"
+}
+
+set_update_schedule() (
+    local mode=$1 value=$2 work file enabled=no active=no pending=no schedule_fd
+    value=$(normalize_schedule "$mode" "$value") || {
+        printf 'Неверное расписание: интервал 1–168 ч.; до 24 значений 0–23 или ЧЧ:ММ через запятую.\n' >&2
+        return 1
+    }
+    command -v flock >/dev/null && command -v systemctl >/dev/null || {
+        printf 'Для автообновления нужны systemd и flock (util-linux).\n' >&2
+        return 1
+    }
+    [[ "$mode" == off || -f "$MANAGER_PATH" ]] || {
+        printf 'Сначала установите меню в %s.\n' "$MANAGER_PATH" >&2
+        return 1
+    }
+    # Эта блокировка защищает только настройки. Для update/full/uninstall сам
+    # rkn-guard использует /run/rkn-guard.lock; повторно захватывать её нельзя.
+    exec {schedule_fd}> "$SCHEDULE_LOCK" || return 1
+    flock -n "$schedule_fd" || { printf 'Расписание уже изменяется другим процессом.\n' >&2; return 1; }
+    umask 077
+    work=$(mktemp -d "$SCHEDULE_UNIT_DIR/.rkn-update.XXXXXX") || return 1
+    trap '[[ "$pending" == no ]] || restore_update_schedule "$work" "$enabled" "$active"; rm -rf -- "$work"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 1' TERM HUP
+    mkdir "$work/old" || return 1
+    for file in "$SCHEDULE_SERVICE" "$SCHEDULE_TIMER"; do
+        if [[ -e "$SCHEDULE_UNIT_DIR/$file" ]]; then
+            cp -p -- "$SCHEDULE_UNIT_DIR/$file" "$work/old/$file" || return 1
+        fi
+    done
+    if [[ -e "$SCHEDULE_CONFIG" ]]; then cp -p -- "$SCHEDULE_CONFIG" "$work/old/config" || return 1; fi
+    systemctl is-enabled --quiet "$SCHEDULE_TIMER" 2>/dev/null && enabled=yes
+    systemctl is-active --quiet "$SCHEDULE_TIMER" 2>/dev/null && active=yes
+    printf '%s=%s\n' "$mode" "$value" > "$work/config" || return 1
+    if [[ "$mode" != off ]]; then
+        write_update_units "$mode" "$value" "$work" || return 1
+        # Повторное сохранение настроек не должно откладывать запуск по интервалу.
+        if [[ "$enabled" == yes && "$active" == yes ]] &&
+            cmp -s "$work/config" "$SCHEDULE_CONFIG" &&
+            cmp -s "$work/$SCHEDULE_TIMER" "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" &&
+            cmp -s "$work/$SCHEDULE_SERVICE" "$SCHEDULE_UNIT_DIR/$SCHEDULE_SERVICE"; then
+            printf 'Это расписание уже включено.\n'
+            return 0
+        fi
+    fi
+    pending=yes
+    if [[ -f "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" || "$active" == yes || "$enabled" == yes ]]; then
+        systemctl disable --now "$SCHEDULE_TIMER" || return 1
+    fi
+    # Остановка таймера не прерывает уже начавшееся обновление.
+    if [[ "$mode" != off ]]; then
+        for file in "$SCHEDULE_SERVICE" "$SCHEDULE_TIMER"; do
+            chmod 644 "$work/$file" && mv -f -- "$work/$file" "$SCHEDULE_UNIT_DIR/$file" || return 1
+        done
+        systemctl daemon-reload && systemctl enable "$SCHEDULE_TIMER" &&
+            systemctl start "$SCHEDULE_TIMER" || return 1
+    fi
+    mv -f -- "$work/config" "$SCHEDULE_CONFIG" || return 1
+    pending=no
+    printf 'Расписание сохранено.\n'
+)
+
+remove_update_schedule() {
+    [[ -e "$SCHEDULE_CONFIG" || -e "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" ]] || return 0
+    set_update_schedule off '' || return 1
+    rm -f -- "$SCHEDULE_CONFIG" "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" "$SCHEDULE_UNIT_DIR/$SCHEDULE_SERVICE" || return 1
+    systemctl daemon-reload
+}
+
+manage_updates() {
+    local action value
+    while true; do
+        printf '\n=== ОБНОВЛЕНИЕ ПОДСЕТЕЙ ===\n'
+        show_update_schedule
+        printf '%s\n' '1. Обновить сейчас' '2. Каждые N часов' \
+            '3. В заданное время по списку (МСК)' '4. Ежедневно в 06:00 (МСК)' \
+            '5. Отключить автообновление' '0. Назад'
+        read_cancellable_input -p 'Обновления — выбор: ' action || continue
+        case "$action" in
+            1) update_lists ;;
+            2)
+                read_cancellable_input -p 'Интервал в часах (1–168): ' value || continue
+                set_update_schedule interval "$value" || printf 'Не удалось применить расписание; подробности выше.\n' >&2
+                ;;
+            3)
+                read_cancellable_input -p 'Время МСК через запятую (6,12,18 или 06:00,18:30): ' value || continue
+                set_update_schedule hours "$value" || printf 'Не удалось применить расписание; подробности выше.\n' >&2
+                ;;
+            4) set_update_schedule msk 06:00 || printf 'Не удалось включить расписание.\n' >&2 ;;
+            5) set_update_schedule off '' || printf 'Не удалось отключить расписание.\n' >&2 ;;
+            0) return ;;
+            *) printf 'Неверный пункт.\n' ;;
+        esac
+    done
 }
 
 install_menu_command() {
@@ -261,6 +551,11 @@ update_application() {
     fi
 
     install_menu_command
+    # Новые версии также обновляют сборщик без повторного применения правил firewall.
+    if rkn-guard --help | grep -q 'setup-logging'; then
+        command -v python3 >/dev/null || apt-get install -y python3 || return 1
+        rkn-guard setup-logging || return 1
+    fi
     echo -e "${GREEN}✅ rkn-guard и меню обновлены. Счётчики атак сохранены.${NC}"
     sleep 2
 }
@@ -273,7 +568,7 @@ install_process() {
 
     echo -e "\n${BLUE}[INFO] Установка...${NC}"
     apt-get update
-    apt-get install -y curl wget rsyslog ipset ufw grep sed coreutils whois
+    apt-get install -y curl wget rsyslog ipset ufw grep sed coreutils whois util-linux tzdata python3
     systemctl enable --now rsyslog
 
     if command -v curl >/dev/null; then curl -fsSL "$TG_URL" | bash; else wget -qO- "$TG_URL" | bash; fi
@@ -281,7 +576,8 @@ install_process() {
     install_menu_command
 
     echo -e "\n${BLUE}[INFO] Настройка правил...${NC}"
-    rkn-guard full -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" --enable-logging
+    rkn-guard full -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" --enable-logging \
+        --managed-lists --sources-file "$SOURCES_FILE"
 
     if [ $? -ne 0 ]; then
         echo -e "\n${RED}❌ ОШИБКА УСТАНОВКИ!${NC}"
@@ -301,8 +597,30 @@ install_process() {
     systemctl restart antiscan-aggregate.service 2>/dev/null || true
     systemctl restart antiscan-aggregate.timer
 
+    offer_install_schedule || return 1
+
     echo -e "\n${GREEN}✅ Установка завершена!${NC}"
     sleep 2
+}
+
+offer_install_schedule() {
+    local answer
+    while true; do
+        read_cancellable_input -p 'Включить автообновление подсетей ежедневно в 06:00 по локальному времени сервера? [y/N]: ' answer || return 0
+        case "$answer" in
+            y|Y) set_update_schedule local 06:00; return $? ;;
+            n|N|'') printf 'Автообновление не включалось; прежнее расписание, если было, сохранено.\n'; return 0 ;;
+            *) printf 'Введите y или n (Enter — нет).\n' ;;
+        esac
+    done
+}
+
+show_attack_stats() {
+    printf '\n%s\n' '=== ТОП АТАК: ВСЕ АДРЕСА ==='
+    rkn-guard stats || {
+        printf 'Не удалось обновить статистику. Проверьте python3 и журнал antiscan-aggregate.service.\n' >&2
+        return 1
+    }
 }
 
 view_log() {
@@ -336,41 +654,41 @@ show_menu() {
         echo -e " ${GREEN}2.${NC} 🕵 Логи IPv4 (Live)"
         echo -e " ${GREEN}3.${NC} 🕵 Логи IPv6 (Live)"
         echo -e " ${GREEN}4.${NC} 🧪 Управление IP (Ban/Unban)"
-        echo -e " ${GREEN}5.${NC} 🔄 Обновить списки (Update)"
+        echo -e " ${GREEN}5.${NC} 🔄 Обновление списков и расписание"
         echo -e " ${GREEN}6.${NC} ⬆️  Обновить rkn-guard"
         echo -e " ${GREEN}7.${NC} 🛠️  Переустановить (Reinstall)"
         echo -e " ${RED}8.${NC} 🗑️  Удалить (Uninstall)"
+        echo -e " ${GREEN}9.${NC} Доп списки подсетей"
         echo -e " ${RED}0.${NC} ❌ Выход"
         echo ""
 
         echo -ne "${CYAN}👉 Ваш выбор:${NC} "
-        read -r choice < /dev/tty
+        read -r choice < /dev/tty || terminal_unavailable
 
         case $choice in
             1)
-                echo -e "\n${GREEN}ТОП 20:${NC}"
-                [ -f /var/log/iptables-scanners-aggregate.csv ] && tail -20 /var/log/iptables-scanners-aggregate.csv || echo "Нет данных"
-                read -p $'\n[Enter] назад...' < /dev/tty
+                show_attack_stats
+                read -r -p $'\n[Enter] назад...' < /dev/tty || terminal_unavailable
                 ;;
             2) view_log "/var/log/iptables-scanners-ipv4.log" ;;
             3) view_log "/var/log/iptables-scanners-ipv6.log" ;;
             4) manage_test_ip ;;
-            5) update_lists ;;
+            5) manage_updates ;;
             6)
                 update_application
                 ;;
             7)
-                rm -f /var/log/iptables-scanners-aggregate.csv
                 install_process
                 ;;
             8) uninstall_process ;;
+            9) manage_extra_lists ;;
             0) exit 0 ;;
             *) echo "Неверно"; sleep 1 ;;
         esac
     done
 }
 
-# When piped into bash, BASH_SOURCE[0] is unset even though we run directly.
+# При передаче скрипта через конвейер в bash переменная BASH_SOURCE[0] не задана.
 if [[ "${BASH_SOURCE[0]:-$0}" != "$0" ]]; then
     return 0
 fi
