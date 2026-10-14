@@ -66,8 +66,9 @@ ipset test SCANNERS-BLOCK-V4 203.0.113.1
 cp /etc/ipset.conf "$work/last-good.conf"
 rm "$work/extra"
 expect_status 2 update
-LC_ALL=C sort /etc/ipset.conf > "$work/current.sorted"
-LC_ALL=C sort "$work/last-good.conf" > "$work/previous.sorted"
+# У нового hash:net меняется служебный initval; сравниваем именно записи подсетей.
+grep '^add ' /etc/ipset.conf | LC_ALL=C sort > "$work/current.sorted"
+grep '^add ' "$work/last-good.conf" | LC_ALL=C sort > "$work/previous.sorted"
 cmp "$work/current.sorted" "$work/previous.sorted"
 cp /etc/ipset.conf "$work/last-good.conf"
 
