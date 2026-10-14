@@ -54,57 +54,69 @@ func (d *Downloader) Download(urls []string) (*domain.NetworkList, error) {
 			return nil, fmt.Errorf("download %s: %w", url, err)
 		}
 
+		parsed, err := parseSubnets(subnets, url, false)
+		if err != nil {
+			return nil, err
+		}
 		added := 0
-		valid := 0
-		for i, subnet := range subnets {
-			subnet, _, _ = strings.Cut(subnet, "#")
-			subnet = strings.TrimSpace(strings.TrimPrefix(subnet, "\ufeff"))
-			if subnet == "" || strings.HasPrefix(subnet, "#") {
-				continue
-			}
-
-			// Проверяем формат и убираем дубликаты.
-			prefix, err := netip.ParsePrefix(subnet)
-			if err != nil {
-				addr, addrErr := netip.ParseAddr(subnet)
-				if addrErr != nil || addr.Zone() != "" {
-					return nil, fmt.Errorf("%s line %d: invalid IP or CIDR %q", url, i+1, subnet)
-				}
-				prefix = netip.PrefixFrom(addr, addr.BitLen())
-			}
-			if prefix.Bits() == 0 || prefix.Addr().Is4In6() {
-				return nil, fmt.Errorf("%s line %d: unsupported prefix %q", url, i+1, subnet)
-			}
-			valid++
-			subnet = prefix.Masked().String()
+		for _, subnet := range append(parsed.IPv4Subnets, parsed.IPv6Subnets...) {
 			if seenSubnets[subnet] {
 				continue
 			}
 			seenSubnets[subnet] = true
-
-			isIPv6 := isIPv6Subnet(subnet)
-			networks.Add(subnet, isIPv6)
+			networks.Add(subnet, isIPv6Subnet(subnet))
 			if networks.IPv4Count() > 65536 || networks.IPv6Count() > 65536 {
 				return nil, fmt.Errorf("list exceeds ipset capacity (65536 per family)")
 			}
 			added++
 		}
-
-		if valid == 0 {
-			return nil, fmt.Errorf("%s: source contains no networks", url)
-		}
-		d.logger.Info().
-			Int("added", added).
-			Str("url", url).
-			Msg("Загрузка списка подсетей завершена")
+		d.logger.Info().Int("added", added).Str("url", url).Msg("Загрузка списка подсетей завершена")
 	}
+	d.logger.Info().Int("total", networks.TotalCount()).Msg("Загрузка завершена")
+	return networks, nil
+}
 
-	d.logger.Info().
-		Int("ipv4_count", networks.IPv4Count()).
-		Int("ipv6_count", networks.IPv6Count()).
-		Int("total", networks.TotalCount()).
-		Msg("Загрузка завершена")
+// parseSubnets проверяет весь список до применения; дополнительные списки требуют CIDR.
+func parseSubnets(subnets []string, source string, requireCIDR bool) (*domain.NetworkList, error) {
+	networks := domain.NewNetworkList()
+	seen := make(map[string]bool)
+	for i, subnet := range subnets {
+		subnet, _, _ = strings.Cut(subnet, "#")
+		subnet = strings.TrimSpace(strings.TrimPrefix(subnet, "\ufeff"))
+		if subnet == "" || strings.HasPrefix(subnet, "#") {
+			continue
+		}
 
+		// Проверяем формат и убираем дубликаты.
+		prefix, err := netip.ParsePrefix(subnet)
+		if err != nil {
+			if requireCIDR {
+				return nil, fmt.Errorf("%s, строка %d: неверный CIDR %q", source, i+1, subnet)
+			}
+			addr, addrErr := netip.ParseAddr(subnet)
+			if addrErr != nil || addr.Zone() != "" {
+				return nil, fmt.Errorf("%s, строка %d: неверный IP или CIDR %q", source, i+1, subnet)
+			}
+			prefix = netip.PrefixFrom(addr, addr.BitLen())
+		}
+		if prefix.Bits() == 0 || prefix.Addr().Is4In6() {
+			return nil, fmt.Errorf("%s, строка %d: недопустимая подсеть %q", source, i+1, subnet)
+		}
+		subnet = prefix.Masked().String()
+		if seen[subnet] {
+			continue
+		}
+		seen[subnet] = true
+
+		isIPv6 := isIPv6Subnet(subnet)
+		networks.Add(subnet, isIPv6)
+		if networks.IPv4Count() > 65536 || networks.IPv6Count() > 65536 {
+			return nil, fmt.Errorf("list exceeds ipset capacity (65536 per family)")
+		}
+	}
+	if networks.TotalCount() == 0 {
+		return nil, fmt.Errorf("%s: список не содержит подсетей", source)
+	}
 	return networks, nil
 }
 

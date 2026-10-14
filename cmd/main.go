@@ -43,6 +43,7 @@ func main() {
 	}
 
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+	rootCmd.PersistentFlags().StringVar(&sourcesFile, "sources-file", service.SourcesPath, "Файл настроек и проверенных копий списков")
 
 	fullCmd := &cobra.Command{
 		Use:   "full",
@@ -52,6 +53,7 @@ func main() {
 	}
 	fullCmd.Flags().StringSliceVarP(&urls, "urls", "u", []string{}, "Список URL для скачивания подсетей")
 	fullCmd.Flags().BoolVarP(&enableLogging, "enable-logging", "l", false, "Включить логирование заблокированных подключений")
+	fullCmd.Flags().BoolVar(&managedLists, "managed-lists", false, "Учесть дополнительные списки и сохранённые копии источников")
 	fullCmd.MarkFlagRequired("urls")
 
 	updateCmd := &cobra.Command{
@@ -61,6 +63,7 @@ func main() {
 		Run:   runUpdate,
 	}
 	updateCmd.Flags().StringSliceVarP(&urls, "urls", "u", []string{}, "Список URL для скачивания подсетей")
+	updateCmd.Flags().BoolVar(&managedLists, "managed-lists", false, "Учесть дополнительные списки и сохранённые копии источников")
 	updateCmd.MarkFlagRequired("urls")
 
 	uninstallCmd := &cobra.Command{
@@ -75,6 +78,7 @@ func main() {
 	rootCmd.AddCommand(fullCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(uninstallCmd)
+	rootCmd.AddCommand(newSourcesCommand())
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "stats",
 		Short: "Обновить статистику и показать все зарегистрированные адреса",
@@ -166,7 +170,7 @@ func runFull(cmd *cobra.Command, args []string) {
 	}
 
 	// Загружаем списки подсетей.
-	networks, err := downloader.Download(urls)
+	networks, _, err := downloadConfiguredLists(downloader)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to download subnets")
 	}
@@ -225,7 +229,7 @@ func runUpdate(cmd *cobra.Command, args []string) {
 		log.Fatal().Msg("This program must be run as root (use sudo)")
 	}
 
-	networks, err := downloader.Download(urls)
+	networks, warnings, err := downloadConfiguredLists(downloader)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to download subnets")
 	}
@@ -234,6 +238,10 @@ func runUpdate(cmd *cobra.Command, args []string) {
 	}
 
 	log.Info().Msg("Списки обновлены, счётчики атак сохранены")
+	if len(warnings) > 0 {
+		log.Warn().Int("sources_with_errors", len(warnings)).Msg("Обновление завершено с ошибками источников; подробности выше")
+		os.Exit(2)
+	}
 }
 
 func runUninstall(cmd *cobra.Command, args []string) {
