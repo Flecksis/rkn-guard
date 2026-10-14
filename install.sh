@@ -272,8 +272,8 @@ manage_extra_lists() {
     while true; do
         printf '\n=== Доп списки подсетей ===\n'
         source_command list || { printf 'Не удалось прочитать настройки дополнительных списков.\n' >&2; return 1; }
-        printf '\nОсновные списки сохраняются, skipa.list уже входит в их число.\n'
-        printf 'Не рекомендуется\n'
+        printf '\nОсновные списки сохраняются в любом случае.\n'
+        # printf 'Не рекомендуется\n'
         printf '%s\n' '1. Добавить список по URL (сначала выключен)' '2. Включить список' \
             '3. Отключить список' '4. Удалить список' '0. Назад'
         read_cancellable_input -p 'Доп списки — выбор: ' action || continue
@@ -658,7 +658,7 @@ show_menu() {
         echo -e " ${GREEN}6.${NC} ⬆️  Обновить rkn-guard"
         echo -e " ${GREEN}7.${NC} 🛠️  Переустановить (Reinstall)"
         echo -e " ${RED}8.${NC} 🗑️  Удалить (Uninstall)"
-        echo -e " ${GREEN}9.${NC} Доп списки подсетей"
+        echo -e " ${GREEN}9.${NC}📡  Доп списки подсетей"
         echo -e " ${RED}0.${NC} ❌ Выход"
         echo ""
 
