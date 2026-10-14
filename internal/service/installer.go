@@ -29,6 +29,11 @@ func (s *InstallerService) EnsureDependencies() error {
 
 	distro := getDistroType()
 	s.logger.Debug().Str("distro", distro).Msg("Detected distribution")
+	if !s.commandExists("python3") {
+		if err := s.installPackage("python3", distro); err != nil {
+			return fmt.Errorf("failed to install python3 for attack statistics: %w", err)
+		}
+	}
 
 	// Проверяем iptables.
 	if !s.commandExists("iptables") {

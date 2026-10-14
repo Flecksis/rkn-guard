@@ -68,6 +68,8 @@ func (s *UninstallerService) stopAndDisableServices() {
 	}
 
 	services := []string{
+		"rkn-guard-update.timer",
+		"rkn-guard-update.service",
 		"antiscan-aggregate.timer",
 		"antiscan-aggregate.service",
 		"antiscan-move-rules.service",
@@ -203,6 +205,9 @@ func (s *UninstallerService) cleanupIPSet() {
 
 func (s *UninstallerService) removeArtifacts(removeLogs bool) {
 	paths := []string{
+		"/etc/systemd/system/rkn-guard-update.timer",
+		"/etc/systemd/system/rkn-guard-update.service",
+		"/etc/rkn-guard-update.conf",
 		IpsetRestoreServicePath,
 		MoveRulesServicePath,
 		AggregateLogsServicePath,
@@ -220,6 +225,9 @@ func (s *UninstallerService) removeArtifacts(removeLogs bool) {
 
 	if !removeLogs {
 		return
+	}
+	if err := removeFileIfExists("/var/lib/rkn-guard/attack-stats.json"); err != nil {
+		s.logger.Warn().Err(err).Msg("Failed to remove attack statistics state")
 	}
 
 	logFiles, err := filepath.Glob("/var/log/iptables-scanners-*")
