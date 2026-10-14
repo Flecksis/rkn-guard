@@ -44,7 +44,7 @@ class ExtraListsMenuTests(unittest.TestCase):
     def test_add_enable_disable_remove_routes_and_warning(self):
         output, calls = self.run_menu("1\nhttps://example.org/list\n2\n1\n3\n1\n4\n1\n0\n")
         self.assertLess(output.index("Не рекомендуется"), output.index("1. Добавить"))
-        self.assertIn("skipa.list уже входит", output)
+        self.assertIn("Основные списки сохраняются", output)
         for action in ("add https://example.org/list", "enable 1", "disable 1", "remove 1"):
             self.assertEqual(sum(line.endswith(action) for line in calls), 1)
         updates = [line for line in calls if line.startswith("update ")]
@@ -56,6 +56,7 @@ class ExtraListsMenuTests(unittest.TestCase):
         for line in calls:
             if line.startswith("sources "):
                 self.assertEqual(line.count("--base-url"), 3)
+                self.assertIn("public/skipa.list", line)
 
     def test_invalid_numbers_and_failed_changes_do_not_update(self):
         _, calls = self.run_menu("2\n0\n3\n-1\n4\n$(touch bad)\n2\n1\n0\n", REJECT_ACTION="enable 1")
