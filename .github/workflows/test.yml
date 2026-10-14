@@ -12,7 +12,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go test ./...
+      - run: go test -race ./...
       - run: go vet ./...
       - run: go build -ldflags="-X main.version=dev -X main.branch=$BUILD_BRANCH" -o "$RUNNER_TEMP/rkn-guard" ./cmd
         env:
@@ -21,5 +21,14 @@ jobs:
       - run: bash tests/menu_versions.sh
       - run: python3 tests/menu_terminal.py
       - run: python3 tests/update_schedule.py
+      - run: python3 tests/extra_lists_menu.py
       - run: python3 tests/attack_stats.py
       - run: sudo env GITHUB_ACTIONS=true RUNNER_OS=Linux RKN_TEST_BINARY="$RUNNER_TEMP/rkn-guard" bash tests/integration/update_schedule_systemd.sh
+      - run: sudo env GITHUB_ACTIONS=true RUNNER_OS=Linux RKN_TEST_BINARY="$RUNNER_TEMP/rkn-guard" python3 tests/integration/extra_lists.py
+      - name: Проверить указанные публичные списки без применения
+        run: sudo env GITHUB_ACTIONS=true RUNNER_OS=Linux RKN_TEST_BINARY="$RUNNER_TEMP/rkn-guard" RKN_TEST_PUBLIC_LISTS=yes python3 tests/integration/extra_lists.py ExtraListsIntegration.test_public_raw_lists_validate_without_applying
+      - name: Проверить применение в отдельном сетевом пространстве
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ipset
+          sudo unshare --net env GITHUB_ACTIONS=true RUNNER_OS=Linux RKN_TEST_BINARY="$RUNNER_TEMP/rkn-guard" bash tests/integration/extra_lists_ipset.sh

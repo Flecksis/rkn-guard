@@ -23,6 +23,7 @@ SCHEDULE_UNIT_DIR="/etc/systemd/system"
 SCHEDULE_LOCK="/run/rkn-guard-schedule.lock"
 SCHEDULE_TIMER="rkn-guard-update.timer"
 SCHEDULE_SERVICE="rkn-guard-update.service"
+SOURCES_FILE="/var/lib/rkn-guard/sources.json"
 
 refresh_version_status() {
     local info old_version payload current latest newest
@@ -246,13 +247,53 @@ manage_test_ip() {
 }
 
 update_lists() {
+    local result=0
     echo -e "\n${CYAN}🔄 Обновление списков...${NC}"
-    if ! rkn-guard update -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA"; then
+    rkn-guard update -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" \
+        --managed-lists --sources-file "$SOURCES_FILE" || result=$?
+    if (( result == 2 )); then
+        printf 'Обновление завершено с ошибками источников. Для них взяты последние корректные данные, если они есть; подробности выше.\n' >&2
+        return 2
+    elif (( result != 0 )); then
         echo -e "${RED}❌ Обновление не выполнено. Проверьте сообщения об ошибках.${NC}" >&2
         return 1
     fi
     echo -e "${GREEN}✅ Готово!${NC}"
     sleep 2
+}
+
+source_command() {
+    rkn-guard sources --sources-file "$SOURCES_FILE" \
+        --base-url "$LIST_GOV" --base-url "$LIST_SCAN" --base-url "$LIST_SKIPA" "$@"
+}
+
+manage_extra_lists() {
+    local action value operation
+    while true; do
+        printf '\n=== Доп списки подсетей ===\n'
+        source_command list || { printf 'Не удалось прочитать настройки дополнительных списков.\n' >&2; return 1; }
+        printf '\nОсновные списки сохраняются, skipa.list уже входит в их число.\n'
+        printf 'Не рекомендуется\n'
+        printf '%s\n' '1. Добавить список по URL (сначала выключен)' '2. Включить список' \
+            '3. Отключить список' '4. Удалить список' '0. Назад'
+        read_cancellable_input -p 'Доп списки — выбор: ' action || continue
+        case "$action" in
+            1)
+                read_cancellable_input -p 'URL текстового списка CIDR: ' value || continue
+                source_command add "$value" || printf 'Не удалось добавить список; настройки остальных сохранены.\n' >&2
+                ;;
+            2|3|4)
+                read_cancellable_input -p 'Номер списка: ' value || continue
+                [[ "$value" =~ ^[1-9][0-9]{0,8}$ ]] || { printf 'Введите номер из списка.\n'; continue; }
+                case "$action" in 2) operation=enable ;; 3) operation=disable ;; 4) operation=remove ;; esac
+                if source_command "$operation" "$value"; then
+                    update_lists || printf 'Настройки сохранены. Проверьте сообщения выше; следующий запуск повторит обновление.\n' >&2
+                fi
+                ;;
+            0) return 0 ;;
+            *) printf 'Неверный пункт.\n' ;;
+        esac
+    done
 }
 
 # Настройки читаем как данные, не как команды. Режим local использует время сервера.
@@ -535,7 +576,8 @@ install_process() {
     install_menu_command
 
     echo -e "\n${BLUE}[INFO] Настройка правил...${NC}"
-    rkn-guard full -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" --enable-logging
+    rkn-guard full -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" --enable-logging \
+        --managed-lists --sources-file "$SOURCES_FILE"
 
     if [ $? -ne 0 ]; then
         echo -e "\n${RED}❌ ОШИБКА УСТАНОВКИ!${NC}"
@@ -616,6 +658,7 @@ show_menu() {
         echo -e " ${GREEN}6.${NC} ⬆️  Обновить rkn-guard"
         echo -e " ${GREEN}7.${NC} 🛠️  Переустановить (Reinstall)"
         echo -e " ${RED}8.${NC} 🗑️  Удалить (Uninstall)"
+        echo -e " ${GREEN}9.${NC} Доп списки подсетей"
         echo -e " ${RED}0.${NC} ❌ Выход"
         echo ""
 
@@ -638,6 +681,7 @@ show_menu() {
                 install_process
                 ;;
             8) uninstall_process ;;
+            9) manage_extra_lists ;;
             0) exit 0 ;;
             *) echo "Неверно"; sleep 1 ;;
         esac

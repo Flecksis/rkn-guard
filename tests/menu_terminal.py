@@ -44,6 +44,7 @@ rm() { record "rm $*"; }
 install_process() { record install; }
 update_application() { record application-update; }
 set_update_schedule() { record "schedule $*"; }
+source_command() { [[ "$1" == list ]] || record "source $*"; }
 if [[ "${MOCK_INPUT:-0}" == 1 ]]; then
     exec 3< "$TEST_DIR/input"
     read() {
@@ -130,6 +131,12 @@ class MenuTests(MenuHarness):
             ("manage_test_ip", "2\n192.0.2.1\n", ["ipset del SCANNERS-BLOCK-V4 192.0.2.1"]),
             ("uninstall_process", "", []),
             ("offer_install_schedule", "", []),
+            ("show_menu", "9\n", []),
+            ("manage_extra_lists", "", []),
+            ("manage_extra_lists", "1\n", []),
+            ("manage_extra_lists", "2\n", []),
+            ("manage_extra_lists", "3\n", []),
+            ("manage_extra_lists", "4\n", []),
         ]
         for entry, data, actions in cases:
             with self.subTest(entry=entry, data=data):
@@ -137,7 +144,7 @@ class MenuTests(MenuHarness):
                 self.mock_run(entry, data, actions=actions)
 
     def test_failed_read_does_not_use_stale_values(self):
-        for entry in ("show_menu", "manage_test_ip", "manage_updates", "uninstall_process", "offer_install_schedule"):
+        for entry in ("show_menu", "manage_test_ip", "manage_updates", "uninstall_process", "offer_install_schedule", "manage_extra_lists"):
             with self.subTest(entry=entry):
                 self.mock_run(entry, FAIL_READ="1")
 
