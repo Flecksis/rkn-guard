@@ -3,7 +3,8 @@
 `rkn-guard` — утилита для Linux, предназначенная для блокировки подсетей сканеров с помощью `ipset` и `iptables`.  
 Утилита автоматически применяет правила фильтрации, сохраняет их после перезагрузки системы и ведёт журналы подключений.
 ps значительно снижает вероятность недоступности(бана) вашего ipv4 адреса из рф ^)
-<img width="527" height="405" alt="image" src="https://github.com/user-attachments/assets/6fed6a1a-0ee2-4ae7-9b4c-ef643d661ab5" />
+<img width="547" height="390" alt="image" src="https://github.com/user-attachments/assets/b557c7cb-8006-4d10-844f-a9d203475342" />
+
 
 
 ## ✨ Возможности
