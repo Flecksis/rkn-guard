@@ -226,15 +226,42 @@ def display_time(value):
 
 
 def display(rows):
+    color = sys.stdout.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
+
+    def paint(value, style):
+        return f"\033[{style}m{value}\033[0m" if color else value
+
+    print(paint("🛡️ ТОП АТАК · ВСЕ АДРЕСА", "1;36"))
     if not rows:
         print("Нет зарегистрированных атак: подходящих записей в CSV и логах пока нет.")
         return
-    print(f"АТАКИ: {len(rows)} адресов, по убыванию количества зарегистрированных событий")
-    print("ТИП | IP | ASN | СЕТЬ | СОБЫТИЙ | ПОСЛЕДНЕЕ СОБЫТИЕ (МСК)")
+    print(f"Адресов: {len(rows)} · По числу событий ↓\n")
+    headers = ["ТИП", "IP", "ASN", "СЕТЬ", "СОБЫТИЙ", "ПОСЛЕДНЕЕ СОБЫТИЕ (МСК)"]
+    cells = []
     for row in sorted_rows(rows):
-        print(" | ".join([clean(row[f]) for f in ("family", "ip", "asn", "name", "count")]
-                         + [display_time(row["seen"])]))
-    print("В журнал попадают только события, разрешённые лимитом логирования iptables.")
+        values = [clean(row[f]) for f in ("family", "ip", "asn", "name", "count")]
+        values[2:4] = ["н/д" if value in ("", "UNKNOWN") else value for value in values[2:4]]
+        cells.append(values + [display_time(row["seen"])])
+    widths = [max(len(row[i]) for row in [headers] + cells) for i in range(len(headers))]
+
+    def border(left, middle, right):
+        print(paint(left + middle.join("─" * (width + 2) for width in widths) + right, "90"))
+
+    def table_row(values, heading=False):
+        formatted = []
+        for i, value in enumerate(values):
+            padded = value.rjust(widths[i]) if i == 4 and not heading else value.ljust(widths[i])
+            style = "1;36" if heading else "90" if value == "н/д" else "1;33" if i == 4 else "1;37" if i == 1 else "0"
+            formatted.append(" " + paint(padded, style) + " ")
+        separator = paint("│", "90")
+        print(separator + separator.join(formatted) + separator)
+
+    border("┌", "┬", "┐")
+    table_row(headers, heading=True)
+    border("├", "┼", "┤")
+    for values in cells:
+        table_row(values)
+    border("└", "┴", "┘")
 
 
 def main():
