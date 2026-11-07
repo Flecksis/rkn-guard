@@ -25,6 +25,39 @@ def event(ip="192.0.2.1", family="v4", stamp="2026-10-12T06:00:00+00:00"):
 
 
 class StatisticsTests(unittest.TestCase):
+    def test_display_time_moscow(self):
+        cases = [
+            ('2026-11-07T17:27:14.524928+00:00', '07.11.2026 20:27:14'),
+            ('2026-11-07T20:27:14+03:00', '07.11.2026 20:27:14'),
+            ('2026-11-07T12:27:14-05:00', '07.11.2026 20:27:14'),
+            ('2026-11-07T22:57:14+05:30', '07.11.2026 20:27:14'),
+            ('2026-11-07T23:30:00Z', '08.11.2026 02:30:00'),
+            ('2026-11-30T22:30:00Z', '01.12.2026 01:30:00'),
+            ('2026-12-31T22:30:00Z', '01.01.2027 01:30:00'),
+        ]
+        cases += [(value, '—') for value in ('', None, 'bad', '2026-02-30T12:00:00Z',
+                                             '2026-11-07T12:00:00')]
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(stats.display_time(value), expected)
+
+    def test_display_preserves_rows_and_sort(self):
+        rows = {str(n): dict(family='v4', ip=f'192.0.2.{n}', asn='AS123',
+                            name='Example', count=n, seen=seen)
+                for n, seen in enumerate(('', 'bad', '2026-11-07T17:27:14Z'), 1)}
+        before = json.dumps(rows)
+        csv_before = stats.csv_text(rows)
+        output = self.display(rows)
+        self.assertIn('ПОСЛЕДНЕЕ СОБЫТИЕ (МСК)', output)
+        lines = [line for line in output.splitlines() if line.startswith('v4 |')]
+        self.assertEqual(lines, [
+            'v4 | 192.0.2.3 | AS123 | Example | 3 | 07.11.2026 20:27:14',
+            'v4 | 192.0.2.2 | AS123 | Example | 2 | —',
+            'v4 | 192.0.2.1 | AS123 | Example | 1 | —',
+        ])
+        self.assertEqual(json.dumps(rows), before)
+        self.assertEqual(stats.csv_text(rows), csv_before)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="rkn-stats-")
         self.addCleanup(self.temp.cleanup)

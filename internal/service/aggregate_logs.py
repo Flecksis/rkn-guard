@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from zoneinfo import ZoneInfo
 
 HEADER = ["IP_TYPE", "IP_ADDRESS", "ASN", "NETNAME", "COUNT", "LAST_SEEN"]
 
@@ -214,14 +215,25 @@ def enrich(rows, cache_path, lookup, now):
             pass  # Отсутствие метаданных не должно скрывать атаку или останавливать сбор.
 
 
+def display_time(value):
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return "—"
+        return parsed.astimezone(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y %H:%M:%S")
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return "—"
+
+
 def display(rows):
     if not rows:
         print("Нет зарегистрированных атак: подходящих записей в CSV и логах пока нет.")
         return
     print(f"АТАКИ: {len(rows)} адресов, по убыванию количества зарегистрированных событий")
-    print("ТИП | IP | ASN | СЕТЬ | СОБЫТИЙ | ПОСЛЕДНЕЕ СОБЫТИЕ")
+    print("ТИП | IP | ASN | СЕТЬ | СОБЫТИЙ | ПОСЛЕДНЕЕ СОБЫТИЕ (МСК)")
     for row in sorted_rows(rows):
-        print(" | ".join(clean(row[f]) for f in ("family", "ip", "asn", "name", "count", "seen")))
+        print(" | ".join([clean(row[f]) for f in ("family", "ip", "asn", "name", "count")]
+                         + [display_time(row["seen"])]))
     print("В журнал попадают только события, разрешённые лимитом логирования iptables.")
 
 
