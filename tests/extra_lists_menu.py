@@ -43,7 +43,8 @@ class ExtraListsMenuTests(unittest.TestCase):
 
     def test_add_enable_disable_remove_routes_and_warning(self):
         output, calls = self.run_menu("1\nhttps://example.org/list\n2\n1\n3\n1\n4\n1\n0\n")
-        self.assertLess(output.index("Не рекомендуется"), output.index("1. Добавить"))
+        self.assertNotIn("Не рекомендуется", output)
+        self.assertIn("📡 ДОП СПИСКИ ПОДСЕТЕЙ", output)
         self.assertIn("Основные списки сохраняются", output)
         for action in ("add https://example.org/list", "enable 1", "disable 1", "remove 1"):
             self.assertEqual(sum(line.endswith(action) for line in calls), 1)

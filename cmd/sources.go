@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strconv"
+	"time"
+	_ "time/tzdata"
 
 	"github.com/Flecksis/rkn-guard/internal/domain"
 	"github.com/Flecksis/rkn-guard/internal/logger"
@@ -12,6 +15,54 @@ import (
 
 var sourcesFile = service.SourcesPath
 var managedLists bool
+
+func sourceUpdateTime(value string) string {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return "нет данных"
+	}
+	moscow, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		return "нет данных"
+	}
+	return parsed.In(moscow).Format("02.01.2006 15:04:05") + " МСК"
+}
+
+func displaySources(state *service.SourceState) {
+	info, err := os.Stdout.Stat()
+	_, noColor := os.LookupEnv("NO_COLOR")
+	color := err == nil && info.Mode()&os.ModeCharDevice != 0 && !noColor && os.Getenv("TERM") != "dumb"
+	paint := func(value, style string) string {
+		if color {
+			return "\033[" + style + "m" + value + "\033[0m"
+		}
+		return value
+	}
+	enabled := 0
+	for _, source := range state.Extra {
+		if source.Enabled {
+			enabled++
+		}
+	}
+	fmt.Printf("Всего: %d · Включено: %d\n\n", len(state.Extra), enabled)
+	if len(state.Extra) == 0 {
+		fmt.Println("Дополнительные списки пока не добавлены.")
+	}
+	for _, source := range state.Extra {
+		status, style := "выключен", "90"
+		if source.Enabled {
+			status, style = "включён", "32"
+		}
+		cache := state.Cache[source.URL]
+		fmt.Printf("%d. %s\n", source.ID, paint("● "+status, style))
+		fmt.Printf("   %s\n", paint(source.URL, "90"))
+		fmt.Printf("   Подсетей в копии: %s · %s\n\n", paint(strconv.Itoa(len(cache.Networks)), "1;33"),
+			paint("Обновлён: "+sourceUpdateTime(cache.UpdatedAt), "90"))
+		if cache.LastError != "" {
+			fmt.Printf("   %s\n\n", paint("Последняя ошибка: "+cache.LastError, "33"))
+		}
+	}
+}
 
 func sourceStore(downloader *service.Downloader) *service.SourceStore {
 	return &service.SourceStore{Path: sourcesFile, Downloader: downloader}
@@ -54,20 +105,7 @@ func newSourcesCommand() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if len(state.Extra) == 0 {
-					fmt.Println("Дополнительные списки пока не добавлены.")
-				}
-				for _, source := range state.Extra {
-					status := "выключен"
-					if source.Enabled {
-						status = "включён"
-					}
-					cache := state.Cache[source.URL]
-					fmt.Printf("%d. [%s] %s\n   Подсетей в копии: %d; проверена: %s\n", source.ID, status, source.URL, len(cache.Networks), cache.UpdatedAt)
-					if cache.LastError != "" {
-						fmt.Printf("   Последняя ошибка: %s\n", cache.LastError)
-					}
-				}
+				displaySources(state)
 				return nil
 			}
 			if len(args) != 2 {
