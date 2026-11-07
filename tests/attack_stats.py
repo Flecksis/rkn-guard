@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -49,7 +50,8 @@ class StatisticsTests(unittest.TestCase):
         csv_before = stats.csv_text(rows)
         output = self.display(rows)
         self.assertIn('ПОСЛЕДНЕЕ СОБЫТИЕ (МСК)', output)
-        lines = [line for line in output.splitlines() if line.startswith('v4 |')]
+        lines = [' | '.join(cell.strip() for cell in line.split('│')[1:-1])
+                 for line in output.splitlines() if line.startswith('│ v4')]
         self.assertEqual(lines, [
             'v4 | 192.0.2.3 | AS123 | Example | 3 | 07.11.2026 20:27:14',
             'v4 | 192.0.2.2 | AS123 | Example | 2 | —',
@@ -67,6 +69,29 @@ class StatisticsTests(unittest.TestCase):
         self.cache = self.root / "cache"
         self.v4 = self.root / "iptables-scanners-ipv4.log"
         self.v6 = self.root / "iptables-scanners-ipv6.log"
+
+    def test_table_alignment_and_terminal_colors(self):
+        rows = {'ip': dict(family='v6', ip='2001:db8:1234:5678:abcd:ffff:1234:5678',
+                           asn='UNKNOWN', name='LONG-NETWORK-NAME', count=123,
+                           seen='2026-11-07T17:27:14Z')}
+        plain = self.display(rows)
+        table = [line for line in plain.splitlines() if line.startswith(('│', '┌', '├', '└'))]
+        self.assertEqual(len(set(map(len, table))), 1)
+        self.assertIn(rows['ip']['ip'], plain)
+        self.assertNotIn('iptables', plain)
+        self.assertNotIn('\033[', plain)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), patch.object(output, 'isatty', return_value=True), \
+                patch.dict(os.environ, {'TERM': 'xterm'}, clear=True):
+            stats.display(rows)
+        colored = output.getvalue()
+        self.assertIn('\033[1;33m', colored)
+        self.assertEqual(re.sub(r'\x1b\[[0-9;]*m', '', colored), plain)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), patch.object(output, 'isatty', return_value=True), \
+                patch.dict(os.environ, {'NO_COLOR': ''}):
+            stats.display(rows)
+        self.assertEqual(output.getvalue(), plain)
 
     def write(self, path, content):
         path.write_text(content, encoding="utf-8", newline="\n")
@@ -95,7 +120,7 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual([r['count'] for r in stats.sorted_rows(rows)], [101] + list(range(30, 1, -1)))
         output = self.display(rows)
         for n in range(1, 31):
-            self.assertIn(f'192.0.2.{n} |', output)
+            self.assertIn(f'192.0.2.{n} ', output)
         self.assertEqual(stats.read_csv(self.csv, NOW, []), rows)
 
     def test_headerless_first_record_and_invalid_rows(self):
@@ -107,7 +132,7 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual(len(warnings), 4)
         self.assertEqual(rows['v4|192.0.2.1']['count'], 2)
         self.assertEqual(rows['v6|2001:db8::1']['count'], 9)
-        self.assertIn('UNKNOWN', self.display(rows))
+        self.assertIn('н/д', self.display(rows))
 
     def test_empty_missing_and_header_only_csv(self):
         for content in (None, '', '|'.join(stats.HEADER) + '\n'):
