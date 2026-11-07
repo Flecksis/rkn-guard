@@ -270,15 +270,19 @@ source_command() {
 manage_extra_lists() {
     local action value operation
     while true; do
-        printf '\n=== Доп списки подсетей ===\n'
+        if [[ -t 1 && ! -v NO_COLOR && "${TERM:-}" != dumb ]]; then
+            printf '\n\033[1;36m📡 ДОП СПИСКИ ПОДСЕТЕЙ\033[0m\n'
+        else
+            printf '\n📡 ДОП СПИСКИ ПОДСЕТЕЙ\n'
+        fi
         source_command list || { printf 'Не удалось прочитать настройки дополнительных списков.\n' >&2; return 1; }
         printf '\nОсновные списки сохраняются в любом случае.\n'
-        printf 'Не рекомендуется\n'
-        printf '%s\n' '1. Добавить список по URL (сначала выключен)' '2. Включить список' \
-            '3. Отключить список' '4. Удалить список' '0. Назад'
-        read_cancellable_input -p 'Доп списки — выбор: ' action || continue
+        printf '%s\n' '1. Добавить список' '2. Включить' \
+            '3. Отключить' '4. Удалить' '0. Назад'
+        read_cancellable_input -p 'Выбор: ' action || continue
         case "$action" in
             1)
+                printf 'Новый список сначала будет выключен.\n'
                 read_cancellable_input -p 'URL текстового списка CIDR: ' value || continue
                 source_command add "$value" || printf 'Не удалось добавить список; настройки остальных сохранены.\n' >&2
                 ;;
@@ -616,7 +620,7 @@ offer_install_schedule() {
 }
 
 show_attack_stats() {
-    printf '\n%s\n' '=== ТОП АТАК: ВСЕ АДРЕСА ==='
+    printf '\n'
     rkn-guard stats || {
         printf 'Не удалось обновить статистику. Проверьте python3 и журнал antiscan-aggregate.service.\n' >&2
         return 1
@@ -629,6 +633,18 @@ view_log() {
     trap ':' INT
     tail -f "$file"
     trap 'exit 0' INT
+}
+
+show_subnet_summary() {
+    local count=$1 updated note plain padding
+    # Файл заменяется после успешного применения и сохранения обоих наборов.
+    updated=$(TZ=Europe/Moscow date -r "${IPSET_CONFIG_FILE:-/etc/ipset.conf}" '+%d.%m.%Y %H:%M' 2>/dev/null) || updated=''
+    note='(дата обновления неизвестна)'
+    [[ -n "$updated" ]] && note="(обновлены $updated МСК)"
+    plain="  📊 Подсетей: $count $note"
+    padding=$((54 - ${#plain} - 1)) # Значок занимает две колонки терминала.
+    (( padding < 0 )) && padding=0
+    printf "${CYAN}║${NC}  📊 Подсетей: ${GREEN}%s${NC} ${DIM}%s${NC}%*s${CYAN}║${NC}\n" "$count" "$note" "$padding" ''
 }
 
 show_menu() {
@@ -645,7 +661,7 @@ show_menu() {
         echo -e "${CYAN}║               💜 RKN-GUARD MANAGER 💜                ║${NC}"
         echo -e "${CYAN}║                   💜 by X3D vpn 💜                   ║${NC}"
         echo -e "${CYAN}╠══════════════════════════════════════════════════════╣${NC}"
-        printf "${CYAN}║${NC}  📊 Подсетей:       ${GREEN}%-33s${NC}${CYAN}║${NC}\n" "$IPSET_CNT"
+        show_subnet_summary "$IPSET_CNT"
         printf "${CYAN}║${NC}  🔥 Атак отбито:    ${RED}%-33s${NC}${CYAN}║${NC}\n" "$PKTS_CNT"
         echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
         echo -e "  ${DIM}└─${NC} ${BOLD}${GREEN}◆ ${CURRENT_VERSION}${NC} ${DIM}·${NC} ${YELLOW}${CURRENT_BRANCH}${NC} ${DIM}· ${UPDATE_STATUS}${NC}"
@@ -655,10 +671,10 @@ show_menu() {
         echo -e " ${GREEN}3.${NC} 🕵 Логи IPv6 (Live)"
         echo -e " ${GREEN}4.${NC} 🧪 Управление IP (Ban/Unban)"
         echo -e " ${GREEN}5.${NC} 🔄 Обновление списков и расписание"
-        echo -e " ${GREEN}6.${NC} ⬆️  Обновить rkn-guard"
-        echo -e " ${GREEN}7.${NC} 🛠️  Переустановить (Reinstall)"
-        echo -e " ${RED}8.${NC} 🗑️  Удалить (Uninstall)"
-        echo -e " ${GREEN}9.${NC}📡  Доп списки подсетей"
+        echo -e " ${GREEN}6.${NC} 📡 Доп списки подсетей"
+        echo -e " ${GREEN}7.${NC} ⬆️  Обновить rkn-guard"
+        echo -e " ${GREEN}8.${NC} 🛠️  Переустановить (Reinstall)"
+        echo -e " ${RED}9.${NC} 🗑️  Удалить (Uninstall)"
         echo -e " ${RED}0.${NC} ❌ Выход"
         echo ""
 
@@ -674,14 +690,14 @@ show_menu() {
             3) view_log "/var/log/iptables-scanners-ipv6.log" ;;
             4) manage_test_ip ;;
             5) manage_updates ;;
-            6)
+            6) manage_extra_lists ;;
+            7)
                 update_application
                 ;;
-            7)
+            8)
                 install_process
                 ;;
-            8) uninstall_process ;;
-            9) manage_extra_lists ;;
+            9) uninstall_process ;;
             0) exit 0 ;;
             *) echo "Неверно"; sleep 1 ;;
         esac

@@ -2,6 +2,7 @@
 """Проверки регрессий ввода меню; все команды firewall заменены безопасными заглушками."""
 
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -131,6 +132,7 @@ class MenuTests(MenuHarness):
             ("manage_test_ip", "2\n192.0.2.1\n", ["ipset del SCANNERS-BLOCK-V4 192.0.2.1"]),
             ("uninstall_process", "", []),
             ("offer_install_schedule", "", []),
+            ("show_menu", "6\n", []),
             ("show_menu", "9\n", []),
             ("manage_extra_lists", "", []),
             ("manage_extra_lists", "1\n", []),
@@ -152,8 +154,31 @@ class MenuTests(MenuHarness):
         self.mock_run("show_menu", "5\n1\n", actions=["rkn-guard update"], LOSE_TTY="1")
 
     def test_normal_navigation(self):
-        self.mock_run("show_menu", "5\n1\n0\n4\n0\n8\nn\n0\n", status=0,
+        self.mock_run("show_menu", "5\n1\n0\n4\n0\n9\nn\n0\n", status=0,
                       actions=["rkn-guard update"])
+
+    def test_reordered_menu_actions(self):
+        self.mock_run("show_menu", "6\n2\n1\n0\n7\n8\n0\n", status=0,
+                      actions=["source enable 1", "rkn-guard update", "application-update", "install"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Requires Linux timezone data")
+    def test_subnet_summary_date_and_missing_file(self):
+        config = self.root / "ipset.conf"
+        config.touch()
+        os.utime(config, (1794074535, 1794074535))
+        for timezone in ("UTC", "America/New_York"):
+            result = subprocess.run([BASH, "-c", 'source "$MENU_SOURCE"; show_subnet_summary 3397'],
+                                    env=dict(os.environ, MENU_SOURCE=str(SOURCE),
+                                             IPSET_CONFIG_FILE=str(config), TZ=timezone),
+                                    capture_output=True, text=True, check=True)
+            plain = re.sub(r'\x1b\[[0-9;]*m', '', result.stdout)
+            self.assertIn('(обновлены 07.11.2026 21:02 МСК)', plain)
+            self.assertEqual(len(plain.rstrip('\n')) + 1, 56)
+        config.unlink()
+        result = subprocess.run([BASH, "-c", 'source "$MENU_SOURCE"; show_subnet_summary 0'],
+                                env=dict(os.environ, MENU_SOURCE=str(SOURCE), IPSET_CONFIG_FILE=str(config)),
+                                capture_output=True, text=True, check=True)
+        self.assertIn('дата обновления неизвестна', result.stdout)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Requires Linux controlling PTYs")
