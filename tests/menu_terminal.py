@@ -166,14 +166,15 @@ class MenuTests(MenuHarness):
         config = self.root / "ipset.conf"
         config.touch()
         os.utime(config, (1794074535, 1794074535))
-        for timezone in ("UTC", "America/New_York"):
+        for timezone, locale in (("UTC", "C"), ("America/New_York", "C.UTF-8")):
             result = subprocess.run([BASH, "-c", 'source "$MENU_SOURCE"; show_subnet_summary 3397'],
                                     env=dict(os.environ, MENU_SOURCE=str(SOURCE),
-                                             IPSET_CONFIG_FILE=str(config), TZ=timezone),
+                                             IPSET_CONFIG_FILE=str(config), TZ=timezone, LC_ALL=locale),
                                     capture_output=True, text=True, check=True)
             plain = re.sub(r'\x1b\[[0-9;]*m', '', result.stdout)
             self.assertIn('(обновлены 07.11.2026 21:02 МСК)', plain)
             self.assertEqual(len(plain.rstrip('\n')) + 1, 56)
+            self.assertRegex(plain.rstrip('\n'), r'\) +║$')
         config.unlink()
         result = subprocess.run([BASH, "-c", 'source "$MENU_SOURCE"; show_subnet_summary 0'],
                                 env=dict(os.environ, MENU_SOURCE=str(SOURCE), IPSET_CONFIG_FILE=str(config)),

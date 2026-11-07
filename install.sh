@@ -636,6 +636,7 @@ view_log() {
 }
 
 show_subnet_summary() {
+    local LC_ALL=C.UTF-8
     local count=$1 updated note plain padding
     # Файл заменяется после успешного применения и сохранения обоих наборов.
     updated=$(TZ=Europe/Moscow date -r "${IPSET_CONFIG_FILE:-/etc/ipset.conf}" '+%d.%m.%Y %H:%M' 2>/dev/null) || updated=''
