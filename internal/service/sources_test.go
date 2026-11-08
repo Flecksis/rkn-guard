@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,142 @@ import (
 
 	"github.com/rs/zerolog"
 )
+
+func TestBaseSourcesFormatsFailuresAndRemoval(t *testing.T) {
+	f := newSourceFixture(t)
+	base := []string{f.server.URL + "/base", f.server.URL + "/second"}
+	f.set("/base", "\ufeff# список\r\n\n192.0.2.1\n192.0.2.1/32 # дубль\n2001:db8::1\n", 0)
+	f.set("/second", "192.0.2.1/32\n198.51.100.9/24", 0)
+	n, warnings, err := f.store.Download(base)
+	if err != nil || len(warnings) != 0 || n.TotalCount() != 3 {
+		t.Fatal(n, warnings, err)
+	}
+	for _, body := range []string{"", "# пусто", "<html>ошибка</html>", "203.0.113.1/32\nbroken"} {
+		f.set("/second", body, 0)
+		n, warnings, err = f.store.Download(base)
+		if err != nil || len(warnings) != 1 || n.TotalCount() != 3 {
+			t.Fatal(n, warnings, err)
+		}
+	}
+	f.mu.Lock()
+	hits := f.hits["/second"]
+	f.mu.Unlock()
+	n, _, err = f.store.Download(base[:1])
+	if err != nil || n.TotalCount() != 2 {
+		t.Fatal(n, err)
+	}
+	state, _ := f.store.Load()
+	if _, exists := state.Cache[base[1]]; exists {
+		t.Fatal("кэш удалённого источника остался")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.hits["/second"] != hits {
+		t.Fatal("обращение к удалённому URL")
+	}
+}
+
+func TestBaseSwitchesPersistWithoutFetchingDisabledCache(t *testing.T) {
+	f := newSourceFixture(t)
+	base := []string{f.server.URL + "/base", f.server.URL + "/extra"}
+	if _, _, err := f.store.Download(base); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.ChangeBase(base, 1, false); err != nil {
+		t.Fatal(err)
+	}
+	f.store = &SourceStore{Path: f.store.Path, Downloader: NewDownloader(zerolog.Nop())}
+	listed, err := f.store.BaseSources(base)
+	if err != nil || listed[0].Enabled || !listed[1].Enabled {
+		t.Fatal(listed, err)
+	}
+	f.mu.Lock()
+	hits := f.hits["/base"]
+	f.mu.Unlock()
+	n, _, err := f.store.Download(base)
+	if err != nil || n.TotalCount() != 2 {
+		t.Fatal(n, err)
+	}
+	f.mu.Lock()
+	after := f.hits["/base"]
+	f.mu.Unlock()
+	if after != hits {
+		t.Fatal("отключённый источник загружался")
+	}
+	state, _ := f.store.Load()
+	if len(state.Cache[base[0]].Networks) == 0 {
+		t.Fatal("кэш удалён вместо отключения")
+	}
+	if err := f.store.ChangeBase(base, 2, false); err != nil {
+		t.Fatal(err)
+	}
+	n, _, err = f.store.Download(base)
+	if err != nil || n.TotalCount() != 0 {
+		t.Fatal("явное отключение всех списков", n, err)
+	}
+	if err := f.store.ChangeBase(base, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	n, _, err = f.store.Download(base)
+	if err != nil || n.TotalCount() != 1 {
+		t.Fatal(n, err)
+	}
+	if err := f.store.ChangeBase(base, 99, false); err == nil {
+		t.Fatal("неверный номер принят")
+	}
+}
+
+func TestNoConfiguredSourcesAndInvalidURL(t *testing.T) {
+	f := newSourceFixture(t)
+	base := []string{f.server.URL + "/base", "not-a-url"}
+	n, warnings, err := f.store.Download(base)
+	if err != nil || n.TotalCount() != 1 || len(warnings) != 1 {
+		t.Fatal(n, warnings, err)
+	}
+	n, _, err = f.store.Download(nil)
+	if n != nil || !errors.Is(err, ErrNoSourceData) {
+		t.Fatal(n, err)
+	}
+	state, _ := f.store.Load()
+	if len(state.Cache) != 0 {
+		t.Fatal("использован старый кэш после удаления всех URL")
+	}
+}
+
+func TestExtraPromotedToBaseDoesNotReturnAfterRemoval(t *testing.T) {
+	f := newSourceFixture(t)
+	url := f.server.URL + "/extra"
+	id, err := f.store.Add(url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Change(id, "enable"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.store.Download([]string{url}); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := f.store.Load()
+	if len(state.Extra) != 0 {
+		t.Fatal("базовый URL остался дополнительным")
+	}
+	if _, _, err := f.store.Download(nil); !errors.Is(err, ErrNoSourceData) {
+		t.Fatal(err)
+	}
+}
+
+func TestTimeoutDoesNotStopOtherBaseSources(t *testing.T) {
+	f := newSourceFixture(t)
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer slow.Close()
+	f.store.Downloader.httpClient.Timeout = 30 * time.Millisecond
+	n, warnings, err := f.store.Download([]string{slow.URL, f.server.URL + "/base"})
+	if err != nil || n.TotalCount() != 1 || len(warnings) != 1 {
+		t.Fatal(n, warnings, err)
+	}
+}
 
 type sourceFixture struct {
 	mu     sync.Mutex
@@ -51,7 +188,7 @@ func (f *sourceFixture) set(path, body string, status int) {
 
 func TestNormalizeSourceURL(t *testing.T) {
 	cases := map[string]string{
-		"https://github.com/C24Be/AS_Network_List/blob/main/blacklists/blacklist-v4.txt": "https://raw.githubusercontent.com/C24Be/AS_Network_List/main/blacklists/blacklist-v4.txt",
+		"https://github.com/C24Be/AS_Network_List/blob/main/blacklists/blacklist-v4.txt":                        "https://raw.githubusercontent.com/C24Be/AS_Network_List/main/blacklists/blacklist-v4.txt",
 		"https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/skipa.list": "https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/main/public/skipa.list",
 		"http://localhost:1234/list?q=1,2": "http://localhost:1234/list?q=1,2",
 	}

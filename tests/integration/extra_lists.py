@@ -97,6 +97,9 @@ SOURCES_FILE={shlex.quote(str(self.config))}
 LIST_GOV={self.url}/gov
 LIST_SCAN={self.url}/scan
 LIST_SKIPA={self.url}/skipa
+LIST_C24=''
+LIST_CYBEROK=''
+BASE_SOURCES_FILE={self.work}/base-sources.list
 sleep() {{ :; }}
 case "$1" in
     update) update_lists ;;
@@ -167,6 +170,26 @@ esac
         self.run_manager("update")
         self.assertIn("203.0.113.0/24", self.networks())
 
+    def test_base_configuration_failures_and_removal(self):
+        config = self.work / 'base-sources.list'
+        config.write_text(f'{self.url}/gov\n{self.url}/scan\n{self.url}/extra\n')
+        self.run_manager('update')
+        self.assertIn('198.51.100.0/24', self.networks())
+        before = self.networks()
+        for name in ('gov', 'scan', 'extra'):
+            (self.web / name).unlink()
+        self.run_manager('update', status=2)
+        self.assertEqual(self.networks(), before)
+        config.write_text(f'{self.url}/gov\n{self.url}/scan\n')
+        self.run_manager('update', status=2)
+        self.assertNotIn('198.51.100.0/24', self.networks())
+        self.assertNotIn(self.url + '/extra', json.loads(self.config.read_text())['cache'])
+        # Без кэша и ответов текущие наборы и сохранённый файл не меняются.
+        saved = self.persist.read_bytes(), self.model.read_bytes()
+        self.config.unlink()
+        self.run_manager('update')
+        self.assertEqual(saved, (self.persist.read_bytes(), self.model.read_bytes()))
+
     def test_real_systemd_timer_uses_enabled_lists_and_reports_error(self):
         self.run_manager("add", self.url + "/extra")
         self.run_manager("enable", "1")
@@ -203,7 +226,8 @@ esac
     @unittest.skipUnless(os.environ.get("RKN_TEST_PUBLIC_LISTS") == "yes", "Проверка внешних URL включается отдельно")
     def test_public_raw_lists_validate_without_applying(self):
         sources = [
-            "https://raw.githubusercontent.com/C24Be/AS_Network_List/main/blacklists/blacklist-v4.txt",
+            "https://raw.githubusercontent.com/C24Be/AS_Network_List/main/blacklists/blacklist.txt",
+            "https://raw.githubusercontent.com/tread-lightly/CyberOK_Skipa_ips/main/lists/skipa_cidr.txt",
             "https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/skipa.list",
         ]
         public_config = self.work / "public-sources.json"
@@ -212,7 +236,7 @@ esac
                                     capture_output=True, text=True, timeout=40)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         saved = json.loads(public_config.read_text())
-        self.assertEqual(len(saved["extra"]), 2)
+        self.assertEqual(len(saved["extra"]), 3)
         for source in saved["extra"]:
             self.assertFalse(source["enabled"])
             self.assertGreater(len(saved["cache"][source["url"]]["networks"]), 0)

@@ -128,6 +128,28 @@ func TestReplacementRollback(t *testing.T) {
 	}
 }
 
+func TestExplicitEmptyReplacementAndRollback(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		f := &fakeSets{sets: map[string][]string{ipsetV4Name: {"old4"}, ipsetV6Name: {"old6"}, "foreign": {"keep"}}}
+		err := replaceSetsChecked(f, domain.NewNetworkList(), func([]byte) error {
+			if fail {
+				return errors.New("disk full")
+			}
+			return nil
+		}, true)
+		if fail {
+			if err == nil || len(f.sets[ipsetV4Name]) != 1 || len(f.sets[ipsetV6Name]) != 1 {
+				t.Fatal(f.sets, err)
+			}
+		} else if err != nil || len(f.sets[ipsetV4Name]) != 0 || len(f.sets[ipsetV6Name]) != 0 {
+			t.Fatal(f.sets, err)
+		}
+		if f.sets["foreign"][0] != "keep" || len(f.sets) != 3 {
+			t.Fatal(f.sets)
+		}
+	}
+}
+
 func TestRollbackFailureRetainsRecoverySet(t *testing.T) {
 	f := &fakeSets{sets: map[string][]string{ipsetV4Name: {"old4"}, ipsetV6Name: {"old6"}}, failSecondSwap: true, failRollback: true}
 	err := replaceSets(f, &domain.NetworkList{IPv4Subnets: []string{"new4"}}, func([]byte) error { return nil })

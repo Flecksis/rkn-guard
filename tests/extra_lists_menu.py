@@ -26,6 +26,17 @@ rkn-guard() {
 
 
 class ExtraListsMenuTests(unittest.TestCase):
+    def test_base_source_configuration_replaces_defaults(self):
+        config = self.root / 'base.list'
+        config.write_text('# sources\nhttps://example.org/one\n\nhttps://example.org/two # note\n')
+        output, calls = self.run_menu('', script='BASE_SOURCES_FILE="$TEST_DIR/base.list"; update_lists')
+        self.assertIn('-u https://example.org/one -u https://example.org/two', calls[0])
+        self.assertNotIn('githubusercontent', calls[0])
+        config.write_text('')
+        (self.root / 'calls').unlink()
+        _, calls = self.run_menu('', script='BASE_SOURCES_FILE="$TEST_DIR/base.list"; update_lists')
+        self.assertNotIn(' -u ', calls[0])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="rkn-extra-menu-")
         self.addCleanup(self.temp.cleanup)
@@ -45,7 +56,7 @@ class ExtraListsMenuTests(unittest.TestCase):
         output, calls = self.run_menu("1\nhttps://example.org/list\n2\n1\n3\n1\n4\n1\n0\n")
         self.assertNotIn("Не рекомендуется", output)
         self.assertIn("📡 ДОП СПИСКИ ПОДСЕТЕЙ", output)
-        self.assertIn("Основные списки сохраняются", output)
+        self.assertIn("5. Управление базовыми списками", output)
         for action in ("add https://example.org/list", "enable 1", "disable 1", "remove 1"):
             self.assertEqual(sum(line.endswith(action) for line in calls), 1)
         updates = [line for line in calls if line.startswith("update ")]
@@ -56,7 +67,7 @@ class ExtraListsMenuTests(unittest.TestCase):
             self.assertIn("public/skipa.list", line)
         for line in calls:
             if line.startswith("sources "):
-                self.assertEqual(line.count("--base-url"), 3)
+                self.assertEqual(line.count("--base-url"), 5)
                 self.assertIn("public/skipa.list", line)
 
     def test_invalid_numbers_and_failed_changes_do_not_update(self):
@@ -68,6 +79,17 @@ class ExtraListsMenuTests(unittest.TestCase):
         output, calls = self.run_menu("1\nhttps://example.org/fail\n0\n", REJECT_ACTION="add ")
         self.assertIn("Не удалось добавить", output)
         self.assertFalse(any(line.startswith("update ") for line in calls))
+
+    def test_base_submenu_routes_and_returns(self):
+        output, calls = self.run_menu('5\n2\n1\n1\n2\n0\n0\n')
+        self.assertIn('Внимание! Отключение базовых списков может существенно снизить эффективность защиты или сделать её бесполезной', output)
+        self.assertTrue(any(line.endswith('base-disable 1') for line in calls))
+        self.assertTrue(any(line.endswith('base-enable 2') for line in calls))
+        self.assertEqual(sum(line.startswith('update ') for line in calls), 2)
+
+    def test_base_submenu_invalid_number_and_failure(self):
+        _, calls = self.run_menu('5\n2\n0\n2\n1\n0\n0\n', REJECT_ACTION='base-disable')
+        self.assertFalse(any(line.startswith('update ') for line in calls))
 
     def test_manual_and_timer_report_partial_failure(self):
         for code, message in ((0, "Готово"), (2, "Обновление завершено с ошибками"), (1, "Обновление не выполнено")):
