@@ -11,6 +11,36 @@ MENU_COMMAND="/usr/local/bin/rkn"
 LIST_GOV="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/government_networks.list"
 LIST_SCAN="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/antiscanner.list"
 LIST_SKIPA="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/skipa.list"
+LIST_C24="https://raw.githubusercontent.com/C24Be/AS_Network_List/main/blacklists/blacklist.txt"
+LIST_CYBEROK="https://raw.githubusercontent.com/tread-lightly/CyberOK_Skipa_ips/main/lists/skipa_cidr.txt"
+BASE_SOURCES_FILE="/etc/rkn-guard-sources.list"
+
+# Если файл существует, он целиком заменяет базовые URL. Один URL на строку.
+load_base_sources() {
+    local line
+    BASE_SOURCE_ARGS=()
+    if [[ -e "$BASE_SOURCES_FILE" ]]; then
+        [[ -f "$BASE_SOURCES_FILE" && -r "$BASE_SOURCES_FILE" ]] || return 1
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line=${line%%#*}
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            [[ -n "$line" ]] && BASE_SOURCE_ARGS+=("$line")
+        done < "$BASE_SOURCES_FILE"
+    else
+        for line in "${LIST_GOV:-}" "${LIST_SCAN:-}" "${LIST_SKIPA:-}" "${LIST_C24:-}" "${LIST_CYBEROK:-}"; do
+            [[ -n "$line" ]] && BASE_SOURCE_ARGS+=("$line")
+        done
+    fi
+    return 0
+}
+
+base_source_args() {
+    local flag=$1 url
+    load_base_sources || { printf 'Не удалось прочитать %s\n' "$BASE_SOURCES_FILE" >&2; return 1; }
+    SOURCE_ARGS=()
+    for url in "${BASE_SOURCE_ARGS[@]}"; do SOURCE_ARGS+=("$flag" "$url"); done
+}
 MANUAL_FILE="/opt/rkn-guard-manual.list"
 RELEASE_API="https://api.github.com/repos/Flecksis/rkn-guard/releases/latest"
 CURRENT_VERSION="не установлена"
@@ -249,7 +279,8 @@ manage_test_ip() {
 update_lists() {
     local result=0
     echo -e "\n${CYAN}🔄 Обновление списков...${NC}"
-    rkn-guard update -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" \
+    base_source_args -u || return 1
+    rkn-guard update "${SOURCE_ARGS[@]}" \
         --managed-lists --sources-file "$SOURCES_FILE" || result=$?
     if (( result == 2 )); then
         printf 'Обновление завершено с ошибками источников. Для них взяты последние корректные данные, если они есть; подробности выше.\n' >&2
@@ -263,8 +294,38 @@ update_lists() {
 }
 
 source_command() {
+    base_source_args --base-url || return 1
     rkn-guard sources --sources-file "$SOURCES_FILE" \
-        --base-url "$LIST_GOV" --base-url "$LIST_SCAN" --base-url "$LIST_SKIPA" "$@"
+        "${SOURCE_ARGS[@]}" "$@"
+}
+
+manage_base_lists() {
+    local action value operation
+    while true; do
+        printf '\n📡 БАЗОВЫЕ СПИСКИ ПОДСЕТЕЙ\n'
+        if [[ -t 1 && ! -v NO_COLOR && "${TERM:-}" != dumb ]]; then
+            printf '\033[1;31m'
+        fi
+        printf 'Внимание! Отключение базовых списков может существенно снизить эффективность защиты или сделать её бесполезной'
+        if [[ -t 1 && ! -v NO_COLOR && "${TERM:-}" != dumb ]]; then printf '\033[0m'; fi
+        printf '\n\n'
+        source_command base-list || return 1
+        printf '%s\n' '1. Включить список' '2. Отключить список' '0. Назад'
+        read_cancellable_input -p 'Выбор: ' action || continue
+        case "$action" in
+            1|2)
+                read_cancellable_input -p 'Номер списка: ' value || continue
+                [[ "$value" =~ ^[1-9][0-9]{0,8}$ ]] || { printf 'Введите номер из списка.\n'; continue; }
+                operation=base-enable
+                [[ "$action" == 2 ]] && operation=base-disable
+                if source_command "$operation" "$value"; then
+                    update_lists || printf 'Настройки сохранены. Проверьте ошибки обновления выше.\n' >&2
+                fi
+                ;;
+            0) return 0 ;;
+            *) printf 'Неверный пункт.\n' ;;
+        esac
+    done
 }
 
 manage_extra_lists() {
@@ -276,9 +337,9 @@ manage_extra_lists() {
             printf '\n📡 ДОП СПИСКИ ПОДСЕТЕЙ\n'
         fi
         source_command list || { printf 'Не удалось прочитать настройки дополнительных списков.\n' >&2; return 1; }
-        printf '\nОсновные списки сохраняются в любом случае.\n'
+        printf '\nНастройки базовых списков доступны в пункте 5.\n'
         printf '%s\n' '1. Добавить список' '2. Включить' \
-            '3. Отключить' '4. Удалить' '0. Назад'
+            '3. Отключить' '4. Удалить' '5. Управление базовыми списками' '0. Назад'
         read_cancellable_input -p 'Выбор: ' action || continue
         case "$action" in
             1)
@@ -294,6 +355,7 @@ manage_extra_lists() {
                     update_lists || printf 'Настройки сохранены. Проверьте сообщения выше; следующий запуск повторит обновление.\n' >&2
                 fi
                 ;;
+            5) manage_base_lists ;;
             0) return 0 ;;
             *) printf 'Неверный пункт.\n' ;;
         esac
@@ -580,7 +642,8 @@ install_process() {
     install_menu_command
 
     echo -e "\n${BLUE}[INFO] Настройка правил...${NC}"
-    rkn-guard full -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" --enable-logging \
+    base_source_args -u || return 1
+    rkn-guard full "${SOURCE_ARGS[@]}" --enable-logging \
         --managed-lists --sources-file "$SOURCES_FILE"
 
     if [ $? -ne 0 ]; then

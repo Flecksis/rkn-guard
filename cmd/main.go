@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -54,7 +55,6 @@ func main() {
 	fullCmd.Flags().StringSliceVarP(&urls, "urls", "u", []string{}, "Список URL для скачивания подсетей")
 	fullCmd.Flags().BoolVarP(&enableLogging, "enable-logging", "l", false, "Включить логирование заблокированных подключений")
 	fullCmd.Flags().BoolVar(&managedLists, "managed-lists", false, "Учесть дополнительные списки и сохранённые копии источников")
-	fullCmd.MarkFlagRequired("urls")
 
 	updateCmd := &cobra.Command{
 		Use:   "update",
@@ -64,7 +64,6 @@ func main() {
 	}
 	updateCmd.Flags().StringSliceVarP(&urls, "urls", "u", []string{}, "Список URL для скачивания подсетей")
 	updateCmd.Flags().BoolVar(&managedLists, "managed-lists", false, "Учесть дополнительные списки и сохранённые копии источников")
-	updateCmd.MarkFlagRequired("urls")
 
 	uninstallCmd := &cobra.Command{
 		Use:   "uninstall",
@@ -137,8 +136,17 @@ func runFull(cmd *cobra.Command, args []string) {
 		log.Fatal().Msg("This program must be run as root (use sudo)")
 	}
 
-	if len(urls) == 0 {
+	if len(urls) == 0 && !managedLists {
 		log.Panic().Msg("Не указаны URL для скачивания подсетей. Используйте флаг --urls")
+	}
+
+	networks, _, err := downloadConfiguredLists(downloader)
+	if errors.Is(err, service.ErrNoSourceData) {
+		log.Warn().Msg("Списки недоступны и пригодного кэша нет. Установка продолжится без изменения ipset и firewall; повторите установку, когда источники станут доступны.")
+		return
+	}
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to download subnets")
 	}
 
 	// Предупреждаем о необходимости разрешить SSH в UFW.
@@ -169,14 +177,8 @@ func runFull(cmd *cobra.Command, args []string) {
 		log.Fatal().Err(err).Msg("Failed to install netfilter-persistent")
 	}
 
-	// Загружаем списки подсетей.
-	networks, _, err := downloadConfiguredLists(downloader)
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to download subnets")
-	}
-
 	// Готовим, заменяем и сохраняем наборы до настройки правил firewall.
-	if err := ipsetSvc.Replace(networks, "/etc/ipset.conf"); err != nil {
+	if err := applySourceNetworks(ipsetSvc, networks); err != nil {
 		log.Fatal().Err(err).Msg("Failed to replace ipset")
 	}
 
@@ -230,10 +232,14 @@ func runUpdate(cmd *cobra.Command, args []string) {
 	}
 
 	networks, warnings, err := downloadConfiguredLists(downloader)
+	if errors.Is(err, service.ErrNoSourceData) {
+		log.Warn().Msg("Списки недоступны и пригодного кэша нет. Действующие наборы и правила сохранены.")
+		return
+	}
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to download subnets")
 	}
-	if err := ipsetSvc.Replace(networks, "/etc/ipset.conf"); err != nil {
+	if err := applySourceNetworks(ipsetSvc, networks); err != nil {
 		log.Fatal().Err(err).Msg("Failed to replace ipset")
 	}
 

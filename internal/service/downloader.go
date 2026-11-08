@@ -27,7 +27,7 @@ func NewDownloader(logger zerolog.Logger) *Downloader {
 	return &Downloader{
 		logger: logger,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 10 * time.Second, // Один запрос на источник, без повторов.
 		},
 	}
 }

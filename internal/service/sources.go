@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -19,6 +20,8 @@ const SourcesPath = "/var/lib/rkn-guard/sources.json"
 const maxSources = 32
 const maxSourcesBytes = 64 << 20
 
+var ErrNoSourceData = errors.New("нет корректных подсетей; текущие наборы оставлены без изменений")
+
 type ExtraSource struct {
 	ID      int    `json:"id"`
 	URL     string `json:"url"`
@@ -33,10 +36,54 @@ type SourceCache struct {
 
 // SourceState хранит настройки и последнюю проверенную копию каждого источника вместе.
 type SourceState struct {
-	Version int                    `json:"version"`
-	NextID  int                    `json:"next_id"`
-	Extra   []ExtraSource          `json:"extra"`
-	Cache   map[string]SourceCache `json:"cache"`
+	Version      int                    `json:"version"`
+	NextID       int                    `json:"next_id"`
+	Extra        []ExtraSource          `json:"extra"`
+	Cache        map[string]SourceCache `json:"cache"`
+	DisabledBase map[string]bool        `json:"disabled_base,omitempty"`
+}
+
+func (s *SourceStore) BaseSources(base []string) ([]ExtraSource, error) {
+	state, err := s.Load()
+	if err != nil {
+		return nil, err
+	}
+	var result []ExtraSource
+	seen := map[string]bool{}
+	for _, raw := range base {
+		url, err := NormalizeSourceURL(raw)
+		if err != nil {
+			return nil, err
+		}
+		if !seen[url] {
+			result = append(result, ExtraSource{ID: len(result) + 1, URL: url, Enabled: !state.DisabledBase[url]})
+			seen[url] = true
+		}
+	}
+	return result, nil
+}
+
+func (s *SourceStore) ChangeBase(base []string, id int, enabled bool) error {
+	sources, err := s.BaseSources(base)
+	if err != nil {
+		return err
+	}
+	if id < 1 || id > len(sources) {
+		return fmt.Errorf("нет базового списка с номером %d", id)
+	}
+	state, err := s.Load()
+	if err != nil {
+		return err
+	}
+	if state.DisabledBase == nil {
+		state.DisabledBase = map[string]bool{}
+	}
+	if enabled {
+		delete(state.DisabledBase, sources[id-1].URL)
+	} else {
+		state.DisabledBase[sources[id-1].URL] = true
+	}
+	return s.save(state)
 }
 
 // SourceStore вызывается под общей блокировкой rkn-guard, как обновление наборов.
@@ -200,29 +247,36 @@ func (s *SourceStore) Download(base []string) (*domain.NetworkList, []string, er
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(base) == 0 {
-		return nil, nil, fmt.Errorf("не заданы основные списки")
-	}
+	var warnings []string
 	var sources []ExtraSource
 	seenURLs := map[string]bool{}
 	for _, raw := range base {
 		normal, err := NormalizeSourceURL(raw)
 		if err != nil {
-			return nil, nil, err
+			warnings = append(warnings, fmt.Sprintf("%s: %v; источник пропущен", raw, err))
+			continue
 		}
 		if !seenURLs[normal] {
-			sources = append(sources, ExtraSource{URL: normal})
+			if !state.DisabledBase[normal] {
+				sources = append(sources, ExtraSource{URL: normal})
+			}
 			seenURLs[normal] = true
 		}
 	}
+	// Источники, ставшие базовыми, не должны оставаться второй записью в доп. списках.
+	extra := state.Extra[:0]
 	for _, source := range state.Extra {
+		if seenURLs[source.URL] {
+			continue
+		}
+		extra = append(extra, source)
 		if source.Enabled && !seenURLs[source.URL] {
 			sources = append(sources, source)
 			seenURLs[source.URL] = true
 		}
 	}
+	state.Extra = extra
 	combined, seen := domain.NewNetworkList(), map[string]bool{}
-	var warnings []string
 	for _, source := range sources {
 		cached := state.Cache[source.URL]
 		networks, fetchErr := s.fetch(source.URL, source.ID != 0)
@@ -248,11 +302,27 @@ func (s *SourceStore) Download(base []string) (*domain.NetworkList, []string, er
 		}
 	}
 	// Сначала сохраняем проверенные копии. Ошибка записи не должна менять рабочие наборы.
+	configured := make(map[string]bool)
+	for url := range seenURLs {
+		configured[url] = true
+	}
+	for _, source := range state.Extra {
+		configured[source.URL] = true
+	}
+	for url := range state.Cache {
+		if !configured[url] {
+			delete(state.Cache, url)
+		}
+	}
 	if err := s.save(state); err != nil {
 		return nil, warnings, fmt.Errorf("не удалось сохранить данные списков: %w", err)
 	}
 	if combined.TotalCount() == 0 {
-		return nil, warnings, fmt.Errorf("нет корректных подсетей; текущие наборы оставлены без изменений")
+		// Пустой набор допустим только при явном отключении всех источников.
+		if len(sources) == 0 && len(seenURLs) > 0 && len(warnings) == 0 {
+			return combined, warnings, nil
+		}
+		return nil, warnings, ErrNoSourceData
 	}
 	if combined.IPv4Count() > 65536 || combined.IPv6Count() > 65536 {
 		return nil, warnings, fmt.Errorf("общий список превышает 65536 подсетей на семейство; текущие наборы сохранены")

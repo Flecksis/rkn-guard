@@ -68,6 +68,14 @@ func sourceStore(downloader *service.Downloader) *service.SourceStore {
 	return &service.SourceStore{Path: sourcesFile, Downloader: downloader}
 }
 
+func applySourceNetworks(ipsets *service.IpsetService, networks *domain.NetworkList) error {
+	if networks.TotalCount() == 0 {
+		logger.Global().Warn().Msg("Все источники отключены. Очищаем наборы rkn-guard, сохраняя правила пользователя.")
+		return ipsets.Clear(service.IpsetConfigPath)
+	}
+	return ipsets.Replace(networks, service.IpsetConfigPath)
+}
+
 func downloadConfiguredLists(downloader *service.Downloader) (*domain.NetworkList, []string, error) {
 	if !managedLists {
 		networks, err := downloader.Download(urls)
@@ -83,7 +91,7 @@ func downloadConfiguredLists(downloader *service.Downloader) (*domain.NetworkLis
 func newSourcesCommand() *cobra.Command {
 	var baseURLs []string
 	command := &cobra.Command{
-		Use:   "sources <list|add|enable|disable|remove> [URL или номер]",
+		Use:   "sources <list|add|enable|disable|remove|base-list|base-enable|base-disable> [URL или номер]",
 		Short: "Настроить дополнительные списки подсетей",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -97,6 +105,26 @@ func newSourcesCommand() *cobra.Command {
 			defer lock.Close()
 			store := sourceStore(service.NewDownloader(logger.Global().Logger))
 			action := args[0]
+			if action == "base-list" {
+				if len(args) != 1 {
+					return fmt.Errorf("просмотр не требует номера")
+				}
+				sources, err := store.BaseSources(baseURLs)
+				if err != nil {
+					return err
+				}
+				if len(sources) == 0 {
+					fmt.Println("Базовые списки не заданы.")
+				}
+				for _, source := range sources {
+					status := "Отключён"
+					if source.Enabled {
+						status = "Включён"
+					}
+					fmt.Printf("%d. ● %s\n   %s\n\n", source.ID, status, source.URL)
+				}
+				return nil
+			}
 			if action == "list" {
 				if len(args) != 1 {
 					return fmt.Errorf("просмотр списка не требует дополнительных аргументов")
@@ -123,7 +151,12 @@ func newSourcesCommand() *cobra.Command {
 			if err != nil || id < 1 {
 				return fmt.Errorf("номер списка должен быть положительным целым числом")
 			}
-			if err := store.Change(id, action); err != nil {
+			if action == "base-enable" || action == "base-disable" {
+				err = store.ChangeBase(baseURLs, id, action == "base-enable")
+			} else {
+				err = store.Change(id, action)
+			}
+			if err != nil {
 				return err
 			}
 			fmt.Println("Настройки сохранены. Для применения нужно обновить списки.")

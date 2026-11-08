@@ -26,8 +26,19 @@ func (s *IpsetService) Replace(networks *domain.NetworkList, path string) error 
 	})
 }
 
+// Clear применяется только при явном отключении всех источников пользователем.
+func (s *IpsetService) Clear(path string) error {
+	return replaceSetsChecked(s.ipsetCmd, domain.NewNetworkList(), func(data []byte) error {
+		return atomicWriteFile(path, data, 0600)
+	}, true)
+}
+
 func replaceSets(cmd setCommands, networks *domain.NetworkList, persist func([]byte) error) (result error) {
-	if networks == nil || networks.TotalCount() == 0 {
+	return replaceSetsChecked(cmd, networks, persist, false)
+}
+
+func replaceSetsChecked(cmd setCommands, networks *domain.NetworkList, persist func([]byte) error, allowEmpty bool) (result error) {
+	if networks == nil || (networks.TotalCount() == 0 && !allowEmpty) {
 		return fmt.Errorf("refusing empty replacement")
 	}
 	type stagedSet struct {
