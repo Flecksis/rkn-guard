@@ -188,10 +188,9 @@ func runFull(cmd *cobra.Command, args []string) {
 	}
 
 	// Настраиваем журнал, если он включён.
+	var loggingErr error
 	if enableLogging {
-		if err := loggingSvc.Refresh(); err != nil {
-			log.Warn().Err(err).Msg("Failed to setup logging configuration")
-		}
+		loggingErr = loggingSvc.Refresh()
 	}
 
 	// Создаём сервис восстановления ipset, который запускается раньше UFW.
@@ -207,6 +206,9 @@ func runFull(cmd *cobra.Command, args []string) {
 		log.Fatal().Err(err).Msg("Не удалось сохранить правила iptables")
 	}
 
+	if loggingErr != nil {
+		log.Fatal().Err(loggingErr).Msg("Установка не завершена: статистика не настроена. Применённые правила защиты сохранены; повторите setup-logging после устранения ошибки")
+	}
 	log.Info().Msg("Полная установка успешно завершена")
 }
 

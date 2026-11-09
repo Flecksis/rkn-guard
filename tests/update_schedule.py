@@ -179,6 +179,7 @@ read_cancellable_input() { builtin read -r "$@" <&3 || terminal_unavailable; }
 check_firewall_safety() { :; }
 clear() { :; }
 apt-get() { :; }
+rsyslogd() { :; }
 curl() { printf ':\n'; }
 install_menu_command() { :; }
 chown() { :; }
@@ -196,6 +197,35 @@ install_process
 ''')
         self.assertIn("full -u https://", (self.root / "installed").read_text())
         self.assertEqual((self.root / "schedule.conf").read_text(), "local=06:00\n")
+
+    def test_installer_stops_on_apt_failure(self):
+        for stage in ('update', 'install'):
+            output = self.run_shell(r'''
+clear() { :; }
+check_firewall_safety() { :; }
+apt-get() { [[ "$1" != "$FAIL_APT" ]]; }
+systemctl() { echo unexpected-service; return 99; }
+rkn-guard() { echo unexpected-firewall; return 99; }
+install_process
+''', status=1, FAIL_APT=stage)
+            self.assertNotIn('Установка завершена!', output)
+            self.assertNotIn('unexpected-', output)
+
+    def test_update_repairs_logging_without_full(self):
+        output = self.run_shell(r'''
+curl() { printf ':\n'; }
+install_menu_command() { :; }
+sleep() { :; }
+rkn-guard() {
+    if [[ "$1" == --help ]]; then echo setup-logging;
+    elif [[ "$1" == setup-logging ]]; then echo repaired;
+    else echo unexpected-firewall; return 99; fi
+}
+update_application
+update_application
+''')
+        self.assertEqual(output.count('repaired'), 2)
+        self.assertNotIn('unexpected-firewall', output)
 
     def test_config_is_not_executed_and_status_reflects_stopped_timer(self):
         (self.root / "schedule.conf").write_text("hours=$(touch pwned)\n")

@@ -633,9 +633,13 @@ install_process() {
     check_firewall_safety
 
     echo -e "\n${BLUE}[INFO] Установка...${NC}"
-    apt-get update
-    apt-get install -y curl wget rsyslog ipset ufw grep sed coreutils whois util-linux tzdata python3
-    systemctl enable --now rsyslog
+    apt-get update || { printf 'Не удалось обновить пакеты. Установка не завершена.\n' >&2; return 1; }
+    apt-get install -y curl wget rsyslog ipset ufw grep sed coreutils whois util-linux tzdata python3 || {
+        printf 'Не удалось установить зависимости. Установка не завершена, повторите после восстановления доступа к репозиторию.\n' >&2
+        return 1
+    }
+    command -v rsyslogd >/dev/null || { printf 'Не найден rsyslogd. Установка не завершена.\n' >&2; return 1; }
+    systemctl enable --now rsyslog && systemctl is-active --quiet rsyslog || return 1
 
     if command -v curl >/dev/null; then curl -fsSL "$TG_URL" | bash; else wget -qO- "$TG_URL" | bash; fi
 
@@ -651,18 +655,10 @@ install_process() {
         exit 1
     fi
 
-    mkdir -p /var/log
-    touch /var/log/iptables-scanners-{ipv4,ipv6}.log
-    LOG_GROUP="syslog"; getent group adm >/dev/null && LOG_GROUP="adm"
-    chown syslog:$LOG_GROUP /var/log/iptables-scanners-*.log
-    chmod 640 /var/log/iptables-scanners-*.log
-
     # Создаем файл для ручных банов, если нет
-    touch "$MANUAL_FILE"
+    touch "$MANUAL_FILE" || return 1
 
-    systemctl restart rsyslog
-    systemctl restart antiscan-aggregate.service 2>/dev/null || true
-    systemctl restart antiscan-aggregate.timer
+    rkn-guard setup-logging || { printf 'Статистика не настроена. Уже применённые правила защиты не удалены.\n' >&2; return 1; }
 
     offer_install_schedule || return 1
 
