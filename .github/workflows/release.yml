@@ -48,11 +48,20 @@ jobs:
           cd dist
           sha256sum * > checksums.txt
 
+      - name: Описание релиза
+        id: notes
+        run: |
+          NOTES="release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$NOTES" ]; then
+            echo "path=$NOTES" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.path }}
+          generate_release_notes: ${{ steps.notes.outputs.path == '' }}
           files: |
             dist/rkn-guard-*
             dist/checksums.txt
