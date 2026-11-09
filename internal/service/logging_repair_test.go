@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -14,11 +15,11 @@ func TestLoggingRepair(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux commands")
 	}
-	for _, failure := range []string{"", "fresh", "apt", "restart rsyslog", "is-active --quiet rsyslog", "start antiscan-aggregate.timer", "rsyslogd"} {
+	for _, failure := range []string{"", "fresh", "apt", "enable rsyslog", "restart rsyslog", "is-active --quiet rsyslog", "start antiscan-aggregate.timer", "rsyslogd"} {
 		t.Run(failure, func(t *testing.T) {
 			root := t.TempDir()
 			bin := filepath.Join(root, "bin")
-			for _, dir := range []string{"bin", "var/log", "etc/logrotate.d", "etc/systemd/system", "usr/local/bin"} {
+			for _, dir := range []string{"bin", "dev", "var/log", "etc/logrotate.d", "etc/systemd/system", "usr/local/bin"} {
 				if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
 					t.Fatal(err)
 				}
@@ -34,6 +35,7 @@ func TestLoggingRepair(t *testing.T) {
 				}
 			}
 			write("python3", "exit 0\n")
+			write("logrotate", "exit 0\n")
 			write("apt-get", `echo apt >> "$REPAIR_CALLS"
 test "$REPAIR_FAIL" = apt && exit 1
 printf '#!/bin/sh\ntest "$REPAIR_FAIL" != rsyslogd\n' > "$REPAIR_BIN/rsyslogd"
@@ -47,6 +49,35 @@ exit 0
 			write("chown", "exit 0\n")
 			write("chmod", "exit 0\n")
 			s := &LoggingService{logger: zerolog.Nop(), root: root}
+			kernel := s.path("/dev/kmsg")
+			if err := os.WriteFile(kernel, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			stop, done := make(chan struct{}), make(chan struct{})
+			t.Cleanup(func() { close(stop); <-done })
+			go func() {
+				defer close(done)
+				previous := ""
+				for {
+					select {
+					case <-stop:
+						return
+					case <-time.After(10 * time.Millisecond):
+					}
+					data, _ := os.ReadFile(kernel)
+					if len(data) == 0 || string(data) == previous || !strings.Contains(string(data), "ANTISCAN-v6:") {
+						continue
+					}
+					for _, path := range []string{IPv4LogPath, IPv6LogPath} {
+						f, err := os.OpenFile(s.path(path), os.O_APPEND|os.O_WRONLY, 0640)
+						if err == nil {
+							f.Write(data)
+							f.Close()
+						}
+					}
+					previous = string(data)
+				}
+			}()
 			for _, path := range []string{IPv4LogPath, IPv6LogPath, AggregateLogPath, AggregateLogsTimerPath} {
 				if failure == "fresh" {
 					continue
@@ -55,7 +86,21 @@ exit 0
 					t.Fatal(err)
 				}
 			}
+			if failure != "" && failure != "fresh" {
+				if err := os.MkdirAll(filepath.Dir(s.path(RsyslogConfigPath)), 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(s.path(RsyslogConfigPath), []byte("прежний конфиг\n"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
 			err := s.Refresh()
+			if failure == "rsyslogd" || failure == "enable rsyslog" {
+				calls, _ := os.ReadFile(filepath.Join(root, "calls"))
+				if strings.Contains(string(calls), "restart rsyslog") {
+					t.Fatal("перезапуск после ошибки проверки")
+				}
+			}
 			if (err != nil) != (failure != "" && failure != "fresh") {
 				t.Fatalf("failure=%q err=%v", failure, err)
 			}
@@ -78,8 +123,18 @@ exit 0
 				if failure == "fresh" {
 					want = ""
 				}
-				if string(data) != want {
+				if !strings.HasPrefix(string(data), want) || (path == AggregateLogPath && string(data) != want) {
 					t.Fatalf("изменён %s", path)
+				}
+			}
+			if failure != "" && failure != "fresh" {
+				config, _ := os.ReadFile(s.path(RsyslogConfigPath))
+				if string(config) != "прежний конфиг\n" {
+					t.Fatal("при сбое не восстановлен конфиг")
+				}
+				t.Setenv("REPAIR_FAIL", "")
+				if err := s.Refresh(); err != nil {
+					t.Fatalf("повтор после сбоя: %v", err)
 				}
 			}
 		})

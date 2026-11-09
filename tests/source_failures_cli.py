@@ -57,7 +57,7 @@ class SourceFailuresCLI(unittest.TestCase):
                             args += ['-u', f'http://127.0.0.1:{server.server_port}/{path}']
                         result = subprocess.run(args, env=dict(os.environ, PATH=str(fake) + ':' + os.environ['PATH']),
                                                 capture_output=True, text=True, timeout=15)
-                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                         self.assertIn('пригодного кэша нет', result.stdout + result.stderr)
                         self.assertFalse((root / 'calls').exists(), 'вызвана системная команда без данных')
 

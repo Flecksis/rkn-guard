@@ -590,38 +590,44 @@ manage_updates() {
     done
 }
 
-install_menu_command() {
-    local temp_manager="/tmp/rkn-guard-manager.sh"
-
+download_script() {
     if command -v curl >/dev/null; then
-        curl -fsSL "$MANAGER_URL" -o "$temp_manager"
+        curl -fsSL "$1" -o "$2" || return 1
     else
-        wget -qO "$temp_manager" "$MANAGER_URL"
+        wget -qO "$2" "$1" || return 1
     fi
-
-    install -m 755 "$temp_manager" "$MANAGER_PATH"
-    rm -f "$temp_manager"
-    printf '%s\n' '#!/usr/bin/env bash' "exec $MANAGER_PATH \"\$@\"" > "$MENU_COMMAND"
-    chmod 755 "$MENU_COMMAND"
+    [[ -s "$2" ]] && bash -n "$2"
 }
+
+install_application() (
+    local script
+    script=$(mktemp) || exit 1
+    trap 'rm -f "$script"' EXIT
+    download_script "$TG_URL" "$script" || { printf 'Не удалось скачать установщик. Повторите после восстановления сети.\n' >&2; exit 1; }
+    bash "$script" || exit 1
+)
+
+install_menu_command() (
+    local temp_manager temp_command
+    temp_manager=$(mktemp "${MANAGER_PATH}.XXXXXX") || exit 1
+    temp_command=$(mktemp "${MENU_COMMAND}.XXXXXX") || { rm -f "$temp_manager"; exit 1; }
+    trap 'rm -f "$temp_manager" "$temp_command"' EXIT
+    download_script "$MANAGER_URL" "$temp_manager" || exit 1
+    printf '%s\n' '#!/usr/bin/env bash' "exec $MANAGER_PATH \"\$@\"" > "$temp_command" || exit 1
+    chmod 755 "$temp_manager" "$temp_command" || exit 1
+    mv -f "$temp_manager" "$MANAGER_PATH" || exit 1
+    mv -f "$temp_command" "$MENU_COMMAND" || exit 1
+)
 
 update_application() {
     echo -e "\n${CYAN}⬆️  Обновление rkn-guard и меню...${NC}"
 
     # Обновляем только бинарник и файлы меню. Не вызываем `full`, поэтому
     # цепочки iptables и их счётчики заблокированных атак не сбрасываются.
-    if command -v curl >/dev/null; then
-        curl -fsSL "$TG_URL" | bash
-    else
-        wget -qO- "$TG_URL" | bash
-    fi
-
-    install_menu_command
+    install_application || return 1
+    install_menu_command || return 1
     # Новые версии также обновляют сборщик без повторного применения правил firewall.
-    if rkn-guard --help | grep -q 'setup-logging'; then
-        command -v python3 >/dev/null || apt-get install -y python3 || return 1
-        rkn-guard setup-logging || return 1
-    fi
+    rkn-guard setup-logging || { printf 'Не удалось настроить статистику. Обновление не завершено.\n' >&2; return 1; }
     echo -e "${GREEN}✅ rkn-guard и меню обновлены. Счётчики атак сохранены.${NC}"
     sleep 2
 }
@@ -630,20 +636,20 @@ install_process() {
     trap 'exit 1' INT
     clear
     echo -e "${CYAN}🚀 УСТАНОВКА RKN-GUARD${NC}"
-    check_firewall_safety
+    check_firewall_safety || return 1
 
     echo -e "\n${BLUE}[INFO] Установка...${NC}"
     apt-get update || { printf 'Не удалось обновить пакеты. Установка не завершена.\n' >&2; return 1; }
-    apt-get install -y curl wget rsyslog ipset ufw grep sed coreutils whois util-linux tzdata python3 || {
+    apt-get install -y curl wget rsyslog logrotate ipset ufw grep sed coreutils whois util-linux tzdata python3 || {
         printf 'Не удалось установить зависимости. Установка не завершена, повторите после восстановления доступа к репозиторию.\n' >&2
         return 1
     }
     command -v rsyslogd >/dev/null || { printf 'Не найден rsyslogd. Установка не завершена.\n' >&2; return 1; }
     systemctl enable --now rsyslog && systemctl is-active --quiet rsyslog || return 1
 
-    if command -v curl >/dev/null; then curl -fsSL "$TG_URL" | bash; else wget -qO- "$TG_URL" | bash; fi
+    install_application || return 1
 
-    install_menu_command
+    install_menu_command || return 1
 
     echo -e "\n${BLUE}[INFO] Настройка правил...${NC}"
     base_source_args -u || return 1

@@ -170,7 +170,7 @@ func (s *InstallerService) runCommand(name string, args ...string) error {
 			Str("output", string(output)).
 			Err(err).
 			Msg("Command failed")
-		return err
+		return fmt.Errorf("%s %v: %w: %s", name, args, err, output)
 	}
 
 	return nil

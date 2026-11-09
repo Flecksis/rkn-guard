@@ -107,11 +107,13 @@ get_latest_release_tag() {
 # Скачивание бинарника
 download_binary() {
     local platform=$1
-    local temp_file="/tmp/${BINARY_NAME}"
+    local temp_file
+    temp_file=$(mktemp) || return 1
     local download_url=""
 
     if [ "$DEV_MODE" = true ]; then
-        local tag=$(get_latest_release_tag)
+        local tag
+        tag=$(get_latest_release_tag) || { rm -f "$temp_file"; return 1; }
         log_info "Найдена версия: ${tag}"
         download_url="https://github.com/${REPO}/releases/download/${tag}/${BINARY_NAME}-${platform}"
     else
@@ -124,11 +126,13 @@ download_binary() {
     if command -v curl &> /dev/null; then
         if ! curl -fsSL "${download_url}" -o "${temp_file}"; then
             log_error "Ошибка при скачивании бинарника"
+            rm -f "$temp_file"
             exit 1
         fi
     elif command -v wget &> /dev/null; then
         if ! wget -q "${download_url}" -O "${temp_file}"; then
             log_error "Ошибка при скачивании бинарника"
+            rm -f "$temp_file"
             exit 1
         fi
     else
@@ -150,7 +154,17 @@ install_binary() {
     mkdir -p "${INSTALL_DIR}"
 
     # Копируем файл
-    cp "${temp_file}" "${install_path}"
+    local staged
+    staged=$(mktemp "${install_path}.XXXXXX") || return 1
+    if ! install -m 755 "${temp_file}" "$staged" || ! "$staged" --version >/dev/null; then
+        rm -f "$staged" "$temp_file"
+        log_error "Новый бинарник не прошёл проверку. Прежний файл сохранён."
+        return 1
+    fi
+    if ! mv -f "$staged" "$install_path"; then
+        rm -f "$staged" "$temp_file"
+        return 1
+    fi
 
     # Выдаём права на выполнение
     chmod +x "${install_path}"
@@ -158,7 +172,7 @@ install_binary() {
     # Удаляем временный файл
     rm -f "${temp_file}"
 
-    log_info "Установка завершена успешно!"
+    log_info "Бинарник установлен."
 }
 
 # Проверка установки
@@ -234,11 +248,13 @@ main() {
     check_root
 
     # Определение системы
-    local platform=$(detect_system)
+    local platform
+    platform=$(detect_system) || exit 1
     log_info "Определена система: ${platform}"
 
     # Скачивание
-    local temp_file=$(download_binary "${platform}")
+    local temp_file
+    temp_file=$(download_binary "${platform}") || exit 1
 
     # Установка
     install_binary "${temp_file}"
@@ -254,4 +270,6 @@ main() {
 }
 
 # Запуск
-main "$@"
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+    main "$@"
+fi

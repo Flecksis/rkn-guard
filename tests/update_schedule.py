@@ -180,7 +180,7 @@ check_firewall_safety() { :; }
 clear() { :; }
 apt-get() { :; }
 rsyslogd() { :; }
-curl() { printf ':\n'; }
+curl() { printf ':\n' > "$4"; }
 install_menu_command() { :; }
 chown() { :; }
 getent() { return 1; }
@@ -213,7 +213,7 @@ install_process
 
     def test_update_repairs_logging_without_full(self):
         output = self.run_shell(r'''
-curl() { printf ':\n'; }
+curl() { printf ':\n' > "$4"; }
 install_menu_command() { :; }
 sleep() { :; }
 rkn-guard() {
@@ -226,6 +226,71 @@ update_application
 ''')
         self.assertEqual(output.count('repaired'), 2)
         self.assertNotIn('unexpected-firewall', output)
+
+    def test_download_failures_preserve_menu_and_stop_update(self):
+        for failure in ('network', 'empty', 'syntax', 'execute'):
+            before = (self.root / 'menu.sh').read_bytes()
+            output = self.run_shell(r'''
+MENU_COMMAND="$TEST_DIR/rkn"
+curl() {
+    case "$FAIL_DOWNLOAD" in
+        network) printf 'partial' > "$4"; return 22 ;;
+        empty) : > "$4" ;;
+        syntax) printf 'if then\n' > "$4" ;;
+        execute) printf 'exit 42\n' > "$4" ;;
+    esac
+}
+rkn-guard() { echo unexpected-binary; return 99; }
+update_application
+''', status=1, FAIL_DOWNLOAD=failure)
+            self.assertEqual((self.root / 'menu.sh').read_bytes(), before)
+            self.assertNotIn('обновлены', output)
+            self.assertNotIn('unexpected-binary', output)
+
+    def test_menu_download_failure_preserves_files(self):
+        before = (self.root / 'menu.sh').read_bytes()
+        command = self.root / 'rkn'
+        command.write_text('old wrapper')
+        self.run_shell(r'''
+MENU_COMMAND="$TEST_DIR/rkn"
+curl() { printf partial > "$4"; return 22; }
+install_menu_command
+''', status=1)
+        self.assertEqual((self.root / 'menu.sh').read_bytes(), before)
+        self.assertEqual(command.read_text(), 'old wrapper')
+
+    def test_update_logging_failure_has_no_success(self):
+        output = self.run_shell(r'''
+install_application() { :; }
+install_menu_command() { :; }
+rkn-guard() { if [[ "$1" == --help ]]; then echo setup-logging; else return 1; fi; }
+update_application
+''', status=1)
+        self.assertNotIn('обновлены', output)
+
+    def test_binary_validation_preserves_previous_install(self):
+        installer = self.root / 'app.sh'
+        installer.write_text((SOURCE.parent / 'app install.sh').read_text(encoding='utf-8'),
+                             encoding='utf-8', newline='\n')
+        app = self.root / 'app'
+        app.mkdir()
+        binary = app / 'rkn-guard'
+        binary.write_text('old binary')
+        candidate = self.root / 'candidate'
+        candidate.write_text('#!/bin/sh\nexit 9\n')
+        self.run_shell(r'''
+source "$TEST_DIR/app.sh"
+INSTALL_DIR="$TEST_DIR/app"
+install_binary "$TEST_DIR/candidate"
+''', status=1)
+        self.assertEqual(binary.read_text(), 'old binary')
+        candidate.write_text('#!/bin/sh\necho v2.3.0\n')
+        self.run_shell(r'''
+source "$TEST_DIR/app.sh"
+INSTALL_DIR="$TEST_DIR/app"
+install_binary "$TEST_DIR/candidate"
+''')
+        self.assertEqual(binary.read_text(), '#!/bin/sh\necho v2.3.0\n')
 
     def test_config_is_not_executed_and_status_reflects_stopped_timer(self):
         (self.root / "schedule.conf").write_text("hours=$(touch pwned)\n")

@@ -61,12 +61,8 @@ func (s *IptablesService) setupVersionChain(version IPVersion, ipsetName string,
 	s.logger.Debug().Str("version", string(version)).Msg("Настройка цепочки")
 
 	// Проверяем, существует ли цепочка.
-	if s.iptablesCmd.ChainExists(version, TableFilter, chainName) {
-		s.logger.Info().Str("chain", chainName).Str("version", string(version)).Msg("Очистка существующей цепочки")
-		if err := s.iptablesCmd.FlushChain(version, TableFilter, chainName); err != nil {
-			return fmt.Errorf("failed to flush chain: %w", err)
-		}
-	} else {
+	// При повторной установке добавляем недостающие правила, не снимая защиту.
+	if !s.iptablesCmd.ChainExists(version, TableFilter, chainName) {
 		s.logger.Info().Str("chain", chainName).Str("version", string(version)).Msg("Создание цепочки")
 		if err := s.iptablesCmd.CreateChain(version, TableFilter, chainName); err != nil {
 			return fmt.Errorf("failed to create chain: %w", err)
@@ -410,6 +406,18 @@ func (s *IptablesService) saveWithUFW() (result error) {
 	}
 
 	// Применяем правила через reload, не отключая работающий UFW.
+	currentV4, err := os.ReadFile(beforeRulesV4)
+	if err != nil {
+		return err
+	}
+	currentV6, err := os.ReadFile(beforeRulesV6)
+	if err != nil {
+		return err
+	}
+	// Повторная установка с теми же правилами не сбрасывает счётчики UFW.
+	if wasActive && string(currentV4) == string(contentV4) && string(currentV6) == string(contentV6) && verifyUFWJumps(s.cmdSvc) == nil {
+		return nil
+	}
 	applyAttempted = true
 	if err := applyUFW(s.cmdSvc, wasActive); err != nil {
 		return err

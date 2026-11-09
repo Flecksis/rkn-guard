@@ -2,7 +2,6 @@ package service
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/rs/zerolog"
 )
@@ -42,16 +41,20 @@ func (s *IpsetService) Restore(path string) error {
 
 // CreateRestoreService создаёт сервис восстановления ipset при загрузке.
 func (s *IpsetService) CreateRestoreService() error {
+	return s.createRestoreService(IpsetRestoreServicePath)
+}
+
+func (s *IpsetService) createRestoreService(path string) error {
 	s.logger.Info().Msg("Создание systemd сервиса для загрузки конфигурации ipset")
 
-	if err := os.WriteFile(IpsetRestoreServicePath, []byte(IpsetRestoreServiceTemplate), 0644); err != nil {
+	if err := atomicWriteFile(path, []byte(IpsetRestoreServiceTemplate), 0644); err != nil {
 		return fmt.Errorf("failed to create systemd service: %w", err)
 	}
 	s.logger.Info().Str("path", IpsetRestoreServicePath).Msg("Создан systemd сервис")
 
 	// Просим systemd перечитать файлы сервисов.
 	if err := s.cmdSvc.DaemonReload(); err != nil {
-		s.logger.Warn().Err(err).Msg("Не удалось перезагрузить демон systemd")
+		return fmt.Errorf("не удалось перечитать службы systemd: %w", err)
 	}
 
 	// Включаем автозапуск сервиса.

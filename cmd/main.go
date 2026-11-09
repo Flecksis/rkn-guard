@@ -82,6 +82,9 @@ func main() {
 		Use:   "stats",
 		Short: "Обновить статистику и показать все зарегистрированные адреса",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := service.NewLoggingService(log.Logger).CheckHealth(); err != nil {
+				return fmt.Errorf("сбор статистики не работает; сохранённые данные не удалены: %w", err)
+			}
 			process := exec.Command("python3", "-c", service.AggregateLogsScriptTemplate, "--display")
 			process.Stdout, process.Stderr = os.Stdout, os.Stderr
 			return process.Run()
@@ -94,6 +97,11 @@ func main() {
 			if err := service.NewInstallerService(log.Logger).CheckRootPrivileges(); err != nil {
 				return err
 			}
+			lock, err := service.AcquireLock()
+			if err != nil {
+				return err
+			}
+			defer lock.Close()
 			return service.NewLoggingService(log.Logger).Refresh()
 		},
 	})
@@ -142,7 +150,7 @@ func runFull(cmd *cobra.Command, args []string) {
 
 	networks, _, err := downloadConfiguredLists(downloader)
 	if errors.Is(err, service.ErrNoSourceData) {
-		log.Warn().Msg("Списки недоступны и пригодного кэша нет. Установка продолжится без изменения ipset и firewall; повторите установку, когда источники станут доступны.")
+		log.Fatal().Msg("Списки недоступны и пригодного кэша нет. Установка не завершена; действующие наборы и правила не изменены.")
 		return
 	}
 	if err != nil {
@@ -194,9 +202,7 @@ func runFull(cmd *cobra.Command, args []string) {
 	}
 
 	// Создаём сервис восстановления ipset, который запускается раньше UFW.
-	if err := ipsetSvc.CreateRestoreService(); err != nil {
-		log.Warn().Err(err).Msg("Failed to create ipset restore service")
-	}
+	restoreErr := ipsetSvc.CreateRestoreService()
 
 	if err := iptablesSvc.Save(); err != nil {
 		log.Error().Msg("╔════════════════════════════════════════════════════════════╗")
@@ -207,7 +213,10 @@ func runFull(cmd *cobra.Command, args []string) {
 	}
 
 	if loggingErr != nil {
-		log.Fatal().Err(loggingErr).Msg("Установка не завершена: статистика не настроена. Применённые правила защиты сохранены; повторите setup-logging после устранения ошибки")
+		log.Fatal().Err(errors.Join(loggingErr, restoreErr)).Msg("Установка не завершена: статистика не настроена. Применённые правила не удалены; повторите setup-logging после устранения ошибки. При ошибке восстановления ipset повторите полную установку")
+	}
+	if restoreErr != nil {
+		log.Fatal().Err(restoreErr).Msg("Установка не завершена: восстановление ipset при загрузке не настроено. Применённые правила не удалены; повторите установку после устранения ошибки")
 	}
 	log.Info().Msg("Полная установка успешно завершена")
 }
@@ -235,7 +244,7 @@ func runUpdate(cmd *cobra.Command, args []string) {
 
 	networks, warnings, err := downloadConfiguredLists(downloader)
 	if errors.Is(err, service.ErrNoSourceData) {
-		log.Warn().Msg("Списки недоступны и пригодного кэша нет. Действующие наборы и правила сохранены.")
+		log.Fatal().Msg("Списки недоступны и пригодного кэша нет. Обновление не выполнено; действующие наборы и правила сохранены.")
 		return
 	}
 	if err != nil {

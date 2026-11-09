@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,7 +34,7 @@ func NewLoggingService(logger zerolog.Logger) *LoggingService {
 }
 
 // Setup настраивает rsyslog, ротацию и сбор статистики.
-func (s *LoggingService) Setup() error {
+func (s *LoggingService) Setup() (result error) {
 	if err := s.ensureDependencies(); err != nil {
 		return err
 	}
@@ -41,6 +42,26 @@ func (s *LoggingService) Setup() error {
 		return fmt.Errorf("statistics collector requires python3: %w", err)
 	}
 	s.logger.Info().Msg("Настройка логирования")
+	restore, err := s.backupSettings()
+	if err != nil {
+		return err
+	}
+	wasActive := exec.Command("systemctl", "is-active", "--quiet", "rsyslog").Run() == nil
+	restartAttempted := false
+	defer func() {
+		if result == nil {
+			return
+		}
+		result = errors.Join(result, restore())
+		result = errors.Join(result, NewInstallerService(s.logger).runCommand("systemctl", "daemon-reload"))
+		if wasActive && restartAttempted {
+			if err := NewInstallerService(s.logger).runCommand("rsyslogd", "-N1"); err != nil {
+				result = errors.Join(result, err)
+			} else {
+				result = errors.Join(result, NewInstallerService(s.logger).runCommand("systemctl", "restart", "rsyslog"))
+			}
+		}
+	}()
 
 	// Создаём настройки rsyslog.
 	if err := s.setupRsyslog(); err != nil {
@@ -63,7 +84,11 @@ func (s *LoggingService) Setup() error {
 	}
 
 	// Сначала проверяем журнал, потом запускаем сборщик.
-	if err := s.reloadRsyslog(); err != nil {
+	restartAttempted, err = s.reloadRsyslog()
+	if err != nil {
+		return err
+	}
+	if err := s.verifyDelivery(5 * time.Second); err != nil {
 		return err
 	}
 	// Настраиваем периодический запуск.
@@ -147,10 +172,7 @@ func (s *LoggingService) prepareLogFiles(logFiles []string) error {
 			f.Close()
 
 			// Выставляем права доступа.
-			owner := "root:adm"
-			if _, err := user.Lookup("syslog"); err == nil {
-				owner = "syslog:adm"
-			}
+			owner := loggingOwner() + ":adm"
 			if err := exec.Command("chown", owner, logFile).Run(); err != nil {
 				return fmt.Errorf("не удалось исправить владельца %s: %w", logFile, err)
 			}
@@ -167,7 +189,11 @@ func (s *LoggingService) prepareLogFiles(logFiles []string) error {
 
 // setupLogrotate создаёт настройки ротации.
 func (s *LoggingService) setupLogrotate() error {
-	if err := writeLoggingConfig(s.path(LogrotateConfigPath), []byte(LogrotateConfigTemplate)); err != nil {
+	config := strings.ReplaceAll(LogrotateConfigTemplate, "create 0640 syslog adm", "create 0640 "+loggingOwner()+" adm")
+	if err := os.MkdirAll(filepath.Dir(s.path(LogrotateConfigPath)), 0755); err != nil {
+		return err
+	}
+	if err := writeLoggingConfig(s.path(LogrotateConfigPath), []byte(config)); err != nil {
 		return err
 	}
 
@@ -177,7 +203,7 @@ func (s *LoggingService) setupLogrotate() error {
 
 // setupAggregationScript создаёт скрипт сбора статистики.
 func (s *LoggingService) setupAggregationScript() error {
-	if err := os.WriteFile(s.path(AggregateLogsScriptPath), []byte(AggregateLogsScriptTemplate), 0755); err != nil {
+	if err := atomicWriteFile(s.path(AggregateLogsScriptPath), []byte(AggregateLogsScriptTemplate), 0755); err != nil {
 		return fmt.Errorf("failed to write aggregator script: %w", err)
 	}
 
@@ -193,13 +219,13 @@ func (s *LoggingService) setupAggregationScript() error {
 // setupCronJob создаёт таймер systemd с интервалом 30 секунд.
 func (s *LoggingService) setupCronJob() error {
 	// Создаём сервис systemd.
-	if err := os.WriteFile(s.path(AggregateLogsServicePath), []byte(AggregateLogsServiceTemplate), 0644); err != nil {
+	if err := atomicWriteFile(s.path(AggregateLogsServicePath), []byte(AggregateLogsServiceTemplate), 0644); err != nil {
 		return err
 	}
 	s.logger.Info().Str("path", s.path(AggregateLogsServicePath)).Msg("Создан systemd сервис")
 
 	// Создаём таймер systemd.
-	if err := os.WriteFile(s.path(AggregateLogsTimerPath), []byte(AggregateLogsTimerTemplate), 0644); err != nil {
+	if err := atomicWriteFile(s.path(AggregateLogsTimerPath), []byte(AggregateLogsTimerTemplate), 0644); err != nil {
 		return err
 	}
 	s.logger.Info().Str("path", s.path(AggregateLogsTimerPath)).Msg("Создан systemd timer")
@@ -226,26 +252,33 @@ func (s *LoggingService) setupCronJob() error {
 }
 
 // reloadRsyslog перезапускает rsyslog.
-func (s *LoggingService) reloadRsyslog() error {
+func (s *LoggingService) reloadRsyslog() (bool, error) {
 	if output, err := exec.Command("rsyslogd", "-N1").CombinedOutput(); err != nil {
-		return fmt.Errorf("ошибка настройки rsyslog: %s: %w", output, err)
+		return false, fmt.Errorf("ошибка настройки rsyslog: %s: %w", output, err)
 	}
-	if err := exec.Command("systemctl", "enable", "rsyslog").Run(); err != nil {
-		return err
+	if err := NewInstallerService(s.logger).runCommand("systemctl", "enable", "rsyslog"); err != nil {
+		return false, err
 	}
-	if err := exec.Command("systemctl", "restart", "rsyslog").Run(); err != nil {
-		return err
+	if err := NewInstallerService(s.logger).runCommand("systemctl", "restart", "rsyslog"); err != nil {
+		return true, err
 	}
 	if err := exec.Command("systemctl", "is-active", "--quiet", "rsyslog").Run(); err != nil {
-		return fmt.Errorf("rsyslog не работает: %w", err)
+		return true, fmt.Errorf("rsyslog не работает: %w", err)
 	}
 	s.logger.Info().Msg("Rsyslog перезапущен")
-	return nil
+	return true, nil
+}
+
+func loggingOwner() string {
+	if _, err := user.Lookup("syslog"); err == nil {
+		return "syslog"
+	}
+	return "root"
 }
 
 func (s *LoggingService) ensureDependencies() error {
 	installer := NewInstallerService(s.logger)
-	for _, dependency := range []struct{ binary, pkg string }{{"python3", "python3"}, {"rsyslogd", "rsyslog"}} {
+	for _, dependency := range []struct{ binary, pkg string }{{"python3", "python3"}, {"rsyslogd", "rsyslog"}, {"logrotate", "logrotate"}} {
 		if _, err := exec.LookPath(dependency.binary); err == nil {
 			continue
 		}
