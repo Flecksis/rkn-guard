@@ -187,7 +187,7 @@ esac
         # Без кэша и ответов текущие наборы и сохранённый файл не меняются.
         saved = self.persist.read_bytes(), self.model.read_bytes()
         self.config.unlink()
-        self.run_manager('update')
+        self.run_manager('update', status=1)
         self.assertEqual(saved, (self.persist.read_bytes(), self.model.read_bytes()))
 
     def test_real_systemd_timer_uses_enabled_lists_and_reports_error(self):
