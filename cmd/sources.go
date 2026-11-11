@@ -69,6 +69,9 @@ func sourceStore(downloader *service.Downloader) *service.SourceStore {
 }
 
 func applySourceNetworks(ipsets *service.IpsetService, networks *domain.NetworkList) error {
+	if err := service.AddManualNetworks(networks); err != nil {
+		return err
+	}
 	if networks.TotalCount() == 0 {
 		logger.Global().Warn().Msg("Все источники отключены. Очищаем наборы rkn-guard, сохраняя правила пользователя.")
 		return ipsets.Clear(service.IpsetConfigPath)

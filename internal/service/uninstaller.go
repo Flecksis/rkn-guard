@@ -215,6 +215,8 @@ func (s *UninstallerService) removeArtifacts(removeLogs bool) {
 		AggregateLogsScriptPath,
 		RsyslogConfigPath,
 		LogrotateConfigPath,
+		ExceptionsPath,
+		ManualIPsPath,
 	}
 
 	for _, path := range paths {

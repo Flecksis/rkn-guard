@@ -78,6 +78,8 @@ func main() {
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(uninstallCmd)
 	rootCmd.AddCommand(newSourcesCommand())
+	rootCmd.AddCommand(newExceptionsCommand())
+	rootCmd.AddCommand(newManualIPsCommand())
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "stats",
 		Short: "Обновить статистику и показать все зарегистрированные адреса",

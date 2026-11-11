@@ -190,88 +190,59 @@ uninstall_process() {
 }
 
 # --- 🧪 УПРАВЛЕНИЕ IP ---
-manage_test_ip() {
-    # Создаем файл списка, если нет
-    touch "$MANUAL_FILE"
-    trap 'continue' INT
-
+manage_exceptions() {
+    local action ip protocol port
     while true; do
         clear
-        echo -e "${YELLOW}=== 🧪 УПРАВЛЕНИЕ IP ===${NC}"
-        echo -e " ${RED}1.${NC} ⛔ ЗАБАНИТЬ IP (Add)"
-        echo -e " ${GREEN}2.${NC} ✅ РАЗБАНИТЬ IP (Select from list)"
-        echo -e " ${CYAN}0.${NC} ↩️  Назад"
-        echo ""
-        echo -ne "${YELLOW}👉 Действие:${NC} "
-
-        read_cancellable_input action || continue
-
-        case $action in
-            1)
-                echo -e "\nВведите IP для БЛОКИРОВКИ ${YELLOW}(Ctrl+C = Отмена)${NC}:"
-                read_cancellable_input -p "IP: " ip || continue
-                [[ -z "$ip" ]] && continue
-
-                OUTPUT=$(ipset add SCANNERS-BLOCK-V4 "$ip" 2>&1)
-                if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}✅ IP $ip ЗАБЛОКИРОВАН!${NC}"
-                    # Добавляем в файл, если его там еще нет
-                    if ! grep -Fxq "$ip" "$MANUAL_FILE"; then
-                        echo "$ip" >> "$MANUAL_FILE"
-                    fi
+        echo '=== ИСКЛЮЧЕНИЯ ==='
+        rkn-guard exceptions list
+        echo '1. Добавить'
+        echo '2. Удалить'
+        echo '0. Назад'
+        read_cancellable_input -p 'Действие: ' action || continue
+        case "$action" in
+            0) return ;;
+            1|2)
+                read_cancellable_input -p 'IP источника: ' ip || continue
+                read_cancellable_input -p 'Протокол (tcp/udp): ' protocol || continue
+                read_cancellable_input -p 'Порт назначения: ' port || continue
+                if [[ "$action" == 1 ]]; then
+                    rkn-guard exceptions add "$ip" "$protocol" "$port"
                 else
-                    echo -e "${RED}❌ Ошибка:${NC} $OUTPUT"
+                    rkn-guard exceptions delete "$ip" "$protocol" "$port"
                 fi
-                read_cancellable_input -p "[Enter]..." || continue
+                read_cancellable_input -p '[Enter]...' || continue
+                ;;
+        esac
+    done
+}
+
+manage_test_ip() {
+    local action ip
+    while true; do
+        clear
+        echo '=== УПРАВЛЕНИЕ IP ==='
+        echo '1. Забанить IP'
+        echo '2. Посмотреть ручные баны / разбанить IP'
+        echo '3. Исключения'
+        echo '0. Назад'
+        read_cancellable_input -p 'Действие: ' action || continue
+        case "$action" in
+            1)
+                read_cancellable_input -p 'IP: ' ip || continue
+                [[ -z "$ip" ]] && continue
+                rkn-guard manual-ips add "$ip"
+                read_cancellable_input -p '[Enter]...' || continue
                 ;;
             2)
-                echo -e "\n${GREEN}=== СПИСОК РУЧНЫХ БАНОВ ===${NC}"
-                if [ ! -s "$MANUAL_FILE" ]; then
-                    echo "Список пуст."
-                else
-                    # Читаем файл в массив
-                    mapfile -t MANUAL_IPS < "$MANUAL_FILE"
-                    i=1
-                    for ip in "${MANUAL_IPS[@]}"; do
-                        echo -e "${CYAN}$i)${NC} $ip"
-                        ((i++))
-                    done
-                fi
-
-                echo -e "\nВведите ${CYAN}НОМЕР${NC} из списка или ${CYAN}IP${NC} вручную:"
-                read_cancellable_input -p "Выбор: " input || continue
-                [[ -z "$input" ]] && continue
-
-                TARGET_IP=""
-
-                # Проверяем, число это или IP
-                if [[ "$input" =~ ^[0-9]+$ ]] && [ "$input" -le "${#MANUAL_IPS[@]}" ] && [ "$input" -gt 0 ]; then
-                    # Это номер из списка (массив начинается с 0, ввод с 1)
-                    INDEX=$((input-1))
-                    TARGET_IP="${MANUAL_IPS[$INDEX]}"
-                else
-                    # Это вероятно IP
-                    TARGET_IP="$input"
-                fi
-
-                echo -e "Разбаниваем: ${YELLOW}$TARGET_IP${NC}..."
-
-                OUTPUT=$(ipset del SCANNERS-BLOCK-V4 "$TARGET_IP" 2>&1)
-                # Удаляем из файла в любом случае
-                sed -i "/^$TARGET_IP$/d" "$MANUAL_FILE"
-
-                if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}✅ Успешно разбанен!${NC}"
-                else
-                    echo -e "${RED}⚠️  Warning:${NC} $OUTPUT (Удален из списка)"
-                fi
-                read_cancellable_input -p "[Enter]..." || continue
+                rkn-guard manual-ips list
+                read_cancellable_input -p 'IP для удаления бана (Enter — назад): ' ip || continue
+                [[ -z "$ip" ]] && continue
+                rkn-guard manual-ips delete "$ip"
+                read_cancellable_input -p '[Enter]...' || continue
                 ;;
-            0)
-                trap 'exit 0' INT
-                return
-                ;;
-            *) ;;
+            3) manage_exceptions ;;
+            0) return ;;
         esac
     done
 }

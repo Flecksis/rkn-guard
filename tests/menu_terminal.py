@@ -32,7 +32,11 @@ record() { printf '%s\n' "$*" >> "$TEST_DIR/actions"; }
 ipset() { [[ "$1" == list ]] || record "ipset $*"; }
 iptables() { :; }
 rkn-guard() {
-    record "rkn-guard $1"
+    if [[ "$1" == manual-ips || "$1" == exceptions ]]; then
+        [[ "$2" == list ]] || record "rkn-guard $*"
+    else
+        record "rkn-guard $1"
+    fi
     if [[ "$1" == update && "${LOSE_TTY:-0}" == 1 ]]; then
         command rm -- "$TEST_TTY"
     fi
@@ -116,6 +120,11 @@ class MenuHarness(unittest.TestCase):
 
 
 class MenuTests(MenuHarness):
+    def test_exception_add_delete_and_back(self):
+        self.mock_run('manage_exceptions', '1\n192.0.2.10\ntcp\n443\n\n2\n192.0.2.10\ntcp\n443\n\n0\n',
+                      status=0, actions=['rkn-guard exceptions add 192.0.2.10 tcp 443',
+                                         'rkn-guard exceptions delete 192.0.2.10 tcp 443'])
+
     def test_eof_at_each_prompt(self):
         cases = [
             ("show_menu", "", []),
@@ -127,9 +136,9 @@ class MenuTests(MenuHarness):
             ("manage_updates", "3\n", []),
             ("manage_test_ip", "", []),
             ("manage_test_ip", "1\n", []),
-            ("manage_test_ip", "1\n192.0.2.2\n", ["ipset add SCANNERS-BLOCK-V4 192.0.2.2"]),
+            ("manage_test_ip", "1\n192.0.2.2\n", ["rkn-guard manual-ips add 192.0.2.2"]),
             ("manage_test_ip", "2\n", []),
-            ("manage_test_ip", "2\n192.0.2.1\n", ["ipset del SCANNERS-BLOCK-V4 192.0.2.1"]),
+            ("manage_test_ip", "2\n192.0.2.1\n", ["rkn-guard manual-ips delete 192.0.2.1"]),
             ("uninstall_process", "", []),
             ("offer_install_schedule", "", []),
             ("show_menu", "6\n", []),

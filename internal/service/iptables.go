@@ -35,6 +35,9 @@ func NewIptablesService(logger zerolog.Logger, cmdSvc *CommandService, enableLog
 func (s *IptablesService) SetupChain() error {
 	s.logger.Info().Msg("Настройка цепочек iptables")
 
+	if _, err := LoadExceptions(ExceptionsPath); err != nil {
+		return err
+	}
 	// Если UFW активен, напрямую к INPUT не подключаемся:
 	// правила будут вызываться через ufw-before-input.
 	linkToInput := !s.isUFWActive()
@@ -122,7 +125,11 @@ func (s *IptablesService) setupVersionChain(version IPVersion, ipsetName string,
 		}
 	}
 
-	return nil
+	entries, err := LoadExceptions(ExceptionsPath)
+	if err != nil {
+		return err
+	}
+	return s.syncExceptions(entries, version)
 }
 
 // Save сохраняет правила доступным в системе способом.
@@ -188,6 +195,10 @@ func (s *IptablesService) isUFWActive() bool {
 
 // saveWithUFW сохраняет и применяет правила через UFW.
 func (s *IptablesService) saveWithUFW() (result error) {
+	entries, err := LoadExceptions(ExceptionsPath)
+	if err != nil {
+		return err
+	}
 	// Перед включением UFW обязательно проверяем доступ по SSH.
 	// Иначе можно потерять доступ к серверу, где UFW пока выключен.
 	status, err := s.cmdSvc.RunOutput("ufw", "status")
@@ -342,7 +353,7 @@ func (s *IptablesService) saveWithUFW() (result error) {
 -A %s %s
 # END SCANNERS-BLOCK
 
-`, chainName, chainName, chainName, establishedRuleV4, logRuleV4, chainName, dropRuleV4)
+`, chainName, chainName, chainName, establishedRuleV4, exceptionLines(entries, IPv4)+logRuleV4, chainName, dropRuleV4)
 
 	// Сохраняем переход перед остальными правилами таблицы filter.
 	newContent, err := insertUFWBlock(contentV4Str, rulesV4, "ufw-before-input")
@@ -394,7 +405,7 @@ func (s *IptablesService) saveWithUFW() (result error) {
 -A %s %s
 # END SCANNERS-BLOCK
 
-`, chainName, chainName, chainName, establishedRuleV6, logRuleV6, chainName, dropRuleV6)
+`, chainName, chainName, chainName, establishedRuleV6, exceptionLines(entries, IPv6)+logRuleV6, chainName, dropRuleV6)
 
 		newContent, err := insertUFWBlock(contentV6Str, rulesV6, "ufw6-before-input")
 		if err != nil {
@@ -475,7 +486,7 @@ func (s *IptablesService) saveWithNetfilterPersistent() error {
 
 	// Применяем через netfilter-persistent
 	if err := s.cmdSvc.Run("netfilter-persistent", "save"); err != nil {
-		s.logger.Warn().Err(err).Msg("netfilter-persistent save failed")
+		return fmt.Errorf("netfilter-persistent save failed: %w", err)
 	}
 
 	return nil
