@@ -4,8 +4,23 @@ set -u
 # --- ЦВЕТА ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
-TG_URL="https://raw.githubusercontent.com/Flecksis/rkn-guard/master/app%20install.sh"
-MANAGER_URL="https://raw.githubusercontent.com/Flecksis/rkn-guard/master/install.sh"
+# --- FIX-3: зафиксированный источник ---
+# Скрипты не тянутся из ветки master: репозиторий фиксируется на теге и коммите,
+# а скачанные файлы сверяются с sha256. Обновить пин можно только явно:
+#   RKN_GUARD_REF=v2.5.0 RKN_GUARD_COMMIT=<sha> bash install.sh
+RKN_GUARD_REPO="Flecksis/rkn-guard"
+RKN_GUARD_PINNED_TAG="v2.4.0"
+RKN_GUARD_PINNED_COMMIT="b3f5726a58ce516cb2f62355cdc8a76d80baab11"
+PINNED_REF="${RKN_GUARD_REF:-$RKN_GUARD_PINNED_TAG}"
+PINNED_COMMIT="${RKN_GUARD_COMMIT:-$RKN_GUARD_PINNED_COMMIT}"
+
+# sha256 файлов на зафиксированном коммите. Заданный ref без своей таблицы
+# хешей не принимается: непроверенный скрипт не запускается от root.
+PINNED_SHA256_APP_INSTALL="0da2cf9f96afa8257fb29051ea3eb2806aeb4dd34b94059958d1b8064e6ef912"
+PINNED_SHA256_MANAGER="e1d4ed28660461f84fef36c7a338454f3512040d10c7ff9eb20c456287a59bd6"
+
+TG_URL="https://raw.githubusercontent.com/${RKN_GUARD_REPO}/${PINNED_COMMIT}/app%20install.sh"
+MANAGER_URL="https://raw.githubusercontent.com/${RKN_GUARD_REPO}/${PINNED_COMMIT}/install.sh"
 MANAGER_PATH="/opt/rkn-guard-manager.sh"
 MENU_COMMAND="/usr/local/bin/rkn"
 LIST_GOV="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/government_networks.list"
@@ -109,25 +124,68 @@ check_root() {
     [[ $EUID -ne 0 ]] && { echo -e "${RED}Запуск только от root!${NC}"; exit 1; }
 }
 
+# check_firewall_safety — FIX-1: установщик не включает UFW и не меняет политику INPUT.
+# Если правила некуда ставить, установка прерывается ДО изменений в системе.
 check_firewall_safety() {
     echo -e "${BLUE}[CHECK] Проверка конфигурации Firewall...${NC}"
     if command -v ufw >/dev/null; then
         UFW_STATUS=$(ufw status | grep "Status" | awk '{print $2}')
-        UFW_RULES=$(ufw show added 2>/dev/null)
-        if [[ "$UFW_STATUS" == "inactive" ]]; then
-            if [[ "$UFW_RULES" != *"22"* ]] && [[ "$UFW_RULES" != *"SSH"* ]] && [[ "$UFW_RULES" != *"OpenSSH"* ]]; then
-                echo -e "\n${RED}⛔ АВАРИЙНАЯ ОСТАНОВКА!${NC}"
-                echo -e "${YELLOW}UFW выключен и нет правил SSH.${NC}"
-                echo "Выполните: ufw allow ssh"
-                exit 1
-            fi
+        if [[ "$UFW_STATUS" != "active" ]]; then
+            echo -e "\n${RED}⛔ АВАРИЙНАЯ ОСТАНОВКА — firewall не изменён${NC}"
+            echo -e "${YELLOW}UFW установлен, но выключен.${NC}"
+            echo "rkn-guard намеренно НЕ включает UFW: включение с политикой DROP и"
+            echo "единственным правилом SSH закрыло бы VPN-порты."
+            echo ""
+            echo "Разрешите нужные порты и включите UFW вручную:"
+            echo "  ufw allow ssh"
+            echo "  ufw allow <vpn-port>/tcp     # порт вашего VPN/REALITY"
+            echo "  ufw status verbose            # проверьте политики и правила"
+            echo "  ufw enable                    # только после проверки портов"
+            echo ""
+            echo "Либо удалите ufw (apt remove --purge ufw): тогда rkn-guard работает"
+            echo "через netfilter-persistent и политику INPUT не трогает."
+            exit 1
         fi
+        echo -e "${GREEN}✓ UFW активен: правила будут добавлены в ufw-before-input${NC}"
     else
         if ! dpkg -l | grep -q netfilter-persistent; then
             DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
             DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent netfilter-persistent
         fi
     fi
+    check_docker_bridge
+}
+
+# check_docker_bridge — FIX-4: честное предупреждение о Docker.
+# Публикация портов через bridge (`-p 443:443`) идёт nat/DOCKER DNAT -> FORWARD,
+# поэтому хостовый INPUT и цепочка SCANNERS-BLOCK в ufw-before-input такой трафик
+# не видят: в FORWARD пакет приходит с src 172.17.0.1 (адрес docker0), а не с
+# адреса сканера. rkn-guard служебные цепочки Docker не правит, поэтому
+# предупреждаем и показываем, где ставить правило.
+check_docker_bridge() {
+    command -v docker >/dev/null 2>&1 || return 0
+    local published bridge_published host_containers
+    published=$(docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null || true)
+    [[ -n "$published" ]] || return 0
+    bridge_published=$(printf '%s\n' "$published" | grep -E '0\.0\.0\.0:|:::' || true)
+    host_containers=$(docker ps --format '{{.Names}} {{.Networks}}' 2>/dev/null | awk '$2 !~ /bridge/ {print $1}' || true)
+    [[ -n "$bridge_published" ]] || return 0
+    echo -e "\n${YELLOW}⚠️  Обнаружен Docker с опубликованными портами (bridge):${NC}"
+    printf '%s\n' "$bridge_published" | sed 's/^/    /'
+    echo -e "${YELLOW}   Такие порты НЕ фильтруются rkn-guard:${NC}"
+    echo "     - пакет идёт nat/PREROUTING -> DOCKER DNAT -> FORWARD, хостовый INPUT не участвует;"
+    echo "     - в FORWARD источник уже 172.17.0.1 (docker0), а не адрес сканера;"
+    echo "     - правила rkn-guard стоят в INPUT / ufw-before-input и матчат --match-set ... src."
+    echo -e "${YELLOW}   Контейнеры с --network host фильтруются как обычные процессы хоста.${NC}"
+    echo -e "${YELLOW}   Если блокировка нужна и для bridge-контейнеров, добавьте вручную:${NC}"
+    echo "     iptables  -I DOCKER-USER 1 -m set --match-set SCANNERS-BLOCK-V4 src -j DROP"
+    echo "     ip6tables -I DOCKER-USER 1 -m set --match-set SCANNERS-BLOCK-V6 src -j DROP"
+    echo "   Проверка: iptables -S DOCKER-USER; iptables -t nat -S DOCKER"
+    if [[ -n "$host_containers" ]]; then
+        echo "   host-network контейнеры (фильтруются): $(echo $host_containers)"
+    fi
+    echo ""
+    return 0
 }
 
 terminal_unavailable() {
@@ -561,20 +619,43 @@ manage_updates() {
     done
 }
 
-download_script() {
-    if command -v curl >/dev/null; then
-        curl -fsSL "$1" -o "$2" || return 1
-    else
-        wget -qO "$2" "$1" || return 1
+# expected_sha256_refuse — проверка целостности скачанного скрипта.
+# Возвращает 0 только при совпадении sha256 с закреплённым значением.
+verify_sha256() {
+    local file=$1 expected=$2 url=$3 actual
+    if [[ -z "$expected" ]]; then
+        printf '⛔ Для %s не задан sha256: запуск непроверенного скрипта от root запрещён.\n' "$url" >&2
+        return 1
     fi
-    [[ -s "$2" ]] && bash -n "$2"
+    actual=$(sha256sum "$file" | awk '{print $1}')
+    if [[ "$actual" != "$expected" ]]; then
+        printf '⛔ sha256 не совпал для %s\n  ожидалось: %s\n  получено:  %s\n' "$url" "$expected" "$actual" >&2
+        return 1
+    fi
+    printf '[PIN] sha256 %s подтверждён: %s\n' "${url##*/}" "$actual"
+    return 0
+}
+
+download_script() {
+    local url=$1 dest=$2 expected=${3:-}
+    if command -v curl >/dev/null; then
+        curl -fsSL --connect-timeout 5 --max-time 60 "$url" -o "$dest" || return 1
+    else
+        wget -qO "$dest" --timeout=60 --tries=1 "$url" || return 1
+    fi
+    [[ -s "$dest" ]] || return 1
+    verify_sha256 "$dest" "$expected" "$url" || return 1
+    bash -n "$dest"
 }
 
 install_application() (
     local script
     script=$(mktemp) || exit 1
     trap 'rm -f "$script"' EXIT
-    download_script "$TG_URL" "$script" || { printf 'Не удалось скачать установщик. Повторите после восстановления сети.\n' >&2; exit 1; }
+    download_script "$TG_URL" "$script" "$PINNED_SHA256_APP_INSTALL" || {
+        printf 'Не удалось скачать или проверить установщик (ref %s, коммит %s). Установка прервана.\n' "$PINNED_REF" "$PINNED_COMMIT" >&2
+        exit 1
+    }
     bash "$script" || exit 1
 )
 
@@ -583,7 +664,7 @@ install_menu_command() (
     temp_manager=$(mktemp "${MANAGER_PATH}.XXXXXX") || exit 1
     temp_command=$(mktemp "${MENU_COMMAND}.XXXXXX") || { rm -f "$temp_manager"; exit 1; }
     trap 'rm -f "$temp_manager" "$temp_command"' EXIT
-    download_script "$MANAGER_URL" "$temp_manager" || exit 1
+    download_script "$MANAGER_URL" "$temp_manager" "$PINNED_SHA256_MANAGER" || exit 1
     printf '%s\n' '#!/usr/bin/env bash' "exec $MANAGER_PATH \"\$@\"" > "$temp_command" || exit 1
     chmod 755 "$temp_manager" "$temp_command" || exit 1
     mv -f "$temp_manager" "$MANAGER_PATH" || exit 1

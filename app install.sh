@@ -12,8 +12,11 @@ NC='\033[0m' # Сбрасываем цвет.
 REPO="Flecksis/rkn-guard"
 BINARY_NAME="rkn-guard"
 INSTALL_DIR="/usr/local/bin"
-LATEST_RELEASE_URL="https://github.com/${REPO}/releases/latest/download"
+# FIX-3: фиксированный релиз вместо releases/latest. Любой скачанный бинарник
+# сверяется с checksums.txt из того же релиза; без совпадения sha256 установки нет.
+PINNED_TAG="${RKN_GUARD_PINNED_TAG:-v2.4.0}"
 DEV_MODE=false
+TAG="${RKN_GUARD_TAG:-$PINNED_TAG}"
 
 # Функция для вывода сообщений
 log_info() {
@@ -75,7 +78,32 @@ detect_system() {
     echo "${os}-${arch}"
 }
 
-# Получение последнего релиза (включая pre-release если --dev)
+# Проверка sha256 скачанного бинарника по checksums.txt того же релиза.
+verify_asset_sha256() {
+    local file=$1 name=$2 tag=$3 sums expected actual
+    sums=$(mktemp) || return 1
+    if ! curl -fsSL "https://github.com/${REPO}/releases/download/${tag}/checksums.txt" -o "$sums" 2>/dev/null \
+        && ! wget -qO "$sums" "https://github.com/${REPO}/releases/download/${tag}/checksums.txt" 2>/dev/null; then
+        rm -f "$sums"
+        log_error "Не удалось скачать checksums.txt для ${tag}: проверить целостность нечем, установка прервана"
+        return 1
+    fi
+    expected=$(awk -v n="$name" '$2 == n {print $1}' "$sums" | head -n1)
+    rm -f "$sums"
+    if [ -z "$expected" ]; then
+        log_error "В checksums.txt релиза ${tag} нет записи для ${name}: установка прервана"
+        return 1
+    fi
+    actual=$(sha256sum "$file" | awk '{print $1}')
+    if [ "$expected" != "$actual" ]; then
+        log_error "sha256 не совпал для ${name}: ожидалось ${expected}, получено ${actual}"
+        return 1
+    fi
+    log_info "sha256 подтверждён (${tag}): ${actual}"
+    return 0
+}
+
+# Получение тега релиза для --dev (явный непроверенный ref, sha256 всё равно проверяется)
 get_latest_release_tag() {
     local api_url="https://api.github.com/repos/${REPO}/releases"
 
@@ -111,14 +139,12 @@ download_binary() {
     temp_file=$(mktemp) || return 1
     local download_url=""
 
+    local tag="$TAG"
     if [ "$DEV_MODE" = true ]; then
-        local tag
         tag=$(get_latest_release_tag) || { rm -f "$temp_file"; return 1; }
-        log_info "Найдена версия: ${tag}"
-        download_url="https://github.com/${REPO}/releases/download/${tag}/${BINARY_NAME}-${platform}"
-    else
-        download_url="${LATEST_RELEASE_URL}/${BINARY_NAME}-${platform}"
+        log_warn "Режим DEV: тег ${tag} не закреплён, целостность проверяется по его checksums.txt"
     fi
+    download_url="https://github.com/${REPO}/releases/download/${tag}/${BINARY_NAME}-${platform}"
 
     log_info "Скачивание ${BINARY_NAME} для ${platform}..."
     log_info "URL: ${download_url}"
@@ -137,6 +163,11 @@ download_binary() {
         fi
     else
         log_error "Не найден curl или wget. Установите один из них"
+        exit 1
+    fi
+
+    if ! verify_asset_sha256 "$temp_file" "${BINARY_NAME}-${platform}" "$tag"; then
+        rm -f "$temp_file"
         exit 1
     fi
 
@@ -207,7 +238,8 @@ show_help() {
     echo "Использование: $0 [OPTIONS]" >&2
     echo "" >&2
     echo "Опции:" >&2
-    echo "  --dev       Установить последний релиз (включая pre-release)" >&2
+    echo "  --tag TAG   Установить конкретный релиз (по умолчанию ${PINNED_TAG}); sha256 обязателен"
+    echo "  --dev       Установить последний релиз, включая pre-release (sha256 всё равно проверяется)" >&2
     echo "  --help      Показать эту справку" >&2
     echo "" >&2
     exit 0
@@ -220,6 +252,11 @@ parse_args() {
             --dev)
                 DEV_MODE=true
                 shift
+                ;;
+            --tag)
+                [ -n "${2:-}" ] || { log_error "--tag требует значение"; exit 1; }
+                TAG="$2"
+                shift 2
                 ;;
             --help|-h)
                 show_help

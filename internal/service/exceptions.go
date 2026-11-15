@@ -86,11 +86,7 @@ func exceptionLines(entries []Exception, version IPVersion) string {
 
 // Удаляем только свои исключения. Правила блокировки остаются на месте.
 func (s *IptablesService) syncExceptions(entries []Exception, version IPVersion) error {
-	name := "iptables"
-	if version == IPv6 {
-		name = "ip6tables"
-	}
-	output, err := s.cmdSvc.RunOutput(name, "-w", "-S", chainName)
+	output, err := s.iptablesCmd.ListChainRules(version, TableFilter, chainName)
 	if err != nil {
 		return err
 	}

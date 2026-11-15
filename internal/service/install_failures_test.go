@@ -50,7 +50,7 @@ esac
 	for _, failure := range []string{"", "yes"} {
 		t.Setenv("FAIL_INSERT", failure)
 		for _, version := range []IPVersion{IPv4, IPv6} {
-			err := s.setupVersionChain(version, ipsetV4Name, false)
+			_, err := s.setupVersionChain(version, ipsetV4Name, false)
 			if (err != nil) != (failure == "yes") {
 				t.Fatalf("%s: %v", failure, err)
 			}

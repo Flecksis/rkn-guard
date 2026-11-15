@@ -203,21 +203,24 @@ func (f *fakeFirewall) Run(name string, args ...string) error {
 }
 func (f *fakeFirewall) RunOutput(string, ...string) (string, error) { return f.status, nil }
 func TestApplyUFW(t *testing.T) {
-	for _, active := range []bool{true, false} {
-		for _, fail := range []bool{true, false} {
-			f := &fakeFirewall{fail: fail, status: "Status: active"}
-			err := applyUFW(f, active)
-			if (err != nil) != fail {
-				t.Fatalf("unexpected error %v", err)
-			}
-			want := "ufw reload"
-			if !active {
-				want = "ufw --force enable"
-			}
-			if !reflect.DeepEqual(f.calls, []string{want}) {
-				t.Fatalf("unexpected commands: %v", f.calls)
-			}
+	for _, fail := range []bool{true, false} {
+		f := &fakeFirewall{fail: fail, status: "Status: active"}
+		err := applyUFW(f, true)
+		if (err != nil) != fail {
+			t.Fatalf("unexpected error %v", err)
 		}
+		// FIX-1: активный UFW применяется reload'ом, а не повторным enable.
+		if !reflect.DeepEqual(f.calls, []string{"ufw reload"}) {
+			t.Fatalf("unexpected commands: %v", f.calls)
+		}
+	}
+	// FIX-1: выключенный UFW не включается — ни одной команды, только ошибка.
+	f := &fakeFirewall{status: "Status: inactive"}
+	if err := applyUFW(f, false); !errors.Is(err, ErrUFWInactive) {
+		t.Fatalf("expected ErrUFWInactive, got %v", err)
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("disabled UFW must not be touched: %v", f.calls)
 	}
 	if err := applyUFW(&fakeFirewall{status: "Status: inactive"}, true); err == nil {
 		t.Fatal("accepted inactive firewall")
