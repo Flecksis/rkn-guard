@@ -215,6 +215,14 @@ func (s *IptablesCommandService) ListChain(version IPVersion, table Table, chain
 	return s.cmdSvc.RunOutput(cmd, args...)
 }
 
+// ListChainRules возвращает правила цепочки в формате iptables-save (-S).
+// Формат сохраняется дословно, чтобы откат мог вернуть прежние правила.
+func (s *IptablesCommandService) ListChainRules(version IPVersion, table Table, chainName string) (string, error) {
+	cmd := s.getCommand(version)
+	args := []string{"-t", string(table), "-S", chainName}
+	return s.cmdSvc.RunOutputQuiet(cmd, args...)
+}
+
 // ListAllChains возвращает цепочки таблицы.
 func (s *IptablesCommandService) ListAllChains(version IPVersion, table Table) (string, error) {
 	cmd := s.getCommand(version)

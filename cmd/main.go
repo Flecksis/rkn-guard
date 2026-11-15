@@ -23,6 +23,8 @@ var (
 	confirmYes       bool
 	removeLogs       bool
 	logLevel         string
+	requiredPortsRaw string
+	requiredPorts    []int
 	version          = "dev" // Версия будет устанавливаться при сборке через -ldflags
 	branch           = "unknown"
 )
@@ -60,6 +62,8 @@ func main() {
 	fullCmd.Flags().BoolVar(&managedLists, "managed-lists", false, "Учесть дополнительные списки и сохранённые копии источников")
 	fullCmd.Flags().BoolVar(&observeOnly, "observe-only", false, "Ничего не менять в firewall: только показать план и скачанные списки")
 	fullCmd.Flags().BoolVar(&noFirewallChange, "no-firewall-changes", false, "Не менять firewall; завершиться ошибкой, если правила некуда ставить")
+	fullCmd.Flags().StringVar(&requiredPortsRaw, "required-ports", joinPorts(service.DefaultRequiredPorts),
+		"Обязательные порты, которые должны остаться доступны (через запятую)")
 
 	updateCmd := &cobra.Command{
 		Use:   "update",
@@ -140,13 +144,31 @@ ipset-наборы и состояние автозапуска сервисов
 }
 
 func runFull(cmd *cobra.Command, args []string) {
+	log := logger.Global()
+
+	// D8: пользовательский ввод проверяется до блокировки и до любых изменений.
+	ports, err := parsePortsList(requiredPortsRaw)
+	if err != nil {
+		failInput(log, err)
+	}
+	if err := validateInputs(inputParams{
+		command:       "full",
+		urls:          urls,
+		managedLists:  managedLists,
+		sourcesFile:   sourcesFile,
+		logLevel:      logLevel,
+		requiredPorts: ports,
+	}); err != nil {
+		failInput(log, err)
+	}
+	requiredPorts = ports
+
 	lock, err := service.AcquireLock()
 	if err != nil {
 		logger.Global().Fatal().Err(err).Msg("Cannot acquire operation lock")
 	}
 	defer lock.Close()
 
-	log := logger.Global()
 	log.Info().Msg("=== Полная установка ===")
 
 	// Создаём сервисы.
@@ -161,12 +183,15 @@ func runFull(cmd *cobra.Command, args []string) {
 
 	// Проверяем права root.
 	if err := installer.CheckRootPrivileges(); err != nil {
-		log.Fatal().Msg("This program must be run as root (use sudo)")
+		failInput(log, errors.New("нужны права root: запустите через sudo"))
 	}
 
-	if len(urls) == 0 && !managedLists {
-		log.Panic().Msg("Не указаны URL для скачивания подсетей. Используйте флаг --urls")
+	// D5: ipset проверяется ДО любых изменений firewall.
+	// Без ipset `ufw reload` оставляет политику INPUT DROP с нулём правил — это потеря SSH.
+	if err := service.IpsetPreflight(cmdSvc, cmdSvc.CommandExists); err != nil {
+		failPreflight(log, err)
 	}
+	log.Info().Msg("Preflight ipset: бинарник, модуль ядра и пробный набор работают")
 
 	// FIX-1: состояние firewall проверяется ДО любых изменений в системе.
 	// UFW не включается автоматически и политика INPUT не меняется.
@@ -185,6 +210,13 @@ func runFull(cmd *cobra.Command, args []string) {
 		log.Info().Msg("UFW активен: правила будут добавлены в ufw-before-input и применены reload'ом")
 	}
 	iptablesSvc.SetObserveOnly(plan.ObserveOnly)
+
+	// D9: обязательные порты проверяются до применения правил.
+	if plan.ObserveOnly {
+		log.Warn().Ints("required_ports", requiredPorts).Msg("Режим наблюдения: проверка обязательных портов не блокирует запуск")
+	} else if err := checkMandatoryPorts(cmdSvc, iptablesSvc, log); err != nil {
+		failPreflight(log, err)
+	}
 
 	networks, _, err := downloadConfiguredLists(downloader)
 	if errors.Is(err, service.ErrNoSourceData) {
@@ -260,13 +292,23 @@ func runFull(cmd *cobra.Command, args []string) {
 // runUpdate обновляет наборы ipset, не пересоздавая правила iptables.
 // Так сохраняются счётчики заблокированных пакетов, которые показывает меню.
 func runUpdate(cmd *cobra.Command, args []string) {
+	log := logger.Global()
+	if err := validateInputs(inputParams{
+		command:      "update",
+		urls:         urls,
+		managedLists: managedLists,
+		sourcesFile:  sourcesFile,
+		logLevel:     logLevel,
+	}); err != nil {
+		failInput(log, err)
+	}
+
 	lock, err := service.AcquireLock()
 	if err != nil {
 		logger.Global().Fatal().Err(err).Msg("Cannot acquire operation lock")
 	}
 	defer lock.Close()
 
-	log := logger.Global()
 	log.Info().Msg("=== Обновление списков без сброса счётчиков атак ===")
 
 	cmdSvc := service.NewCommandService(log.Logger)
@@ -275,7 +317,12 @@ func runUpdate(cmd *cobra.Command, args []string) {
 	ipsetSvc := service.NewIpsetService(log.Logger, cmdSvc)
 
 	if err := installer.CheckRootPrivileges(); err != nil {
-		log.Fatal().Msg("This program must be run as root (use sudo)")
+		failInput(log, errors.New("нужны права root: запустите через sudo"))
+	}
+
+	// D5: обновление тоже меняет ipset — проверяем его до любых изменений.
+	if err := service.IpsetPreflight(cmdSvc, cmdSvc.CommandExists); err != nil {
+		failPreflight(log, err)
 	}
 
 	networks, warnings, err := downloadConfiguredLists(downloader)
@@ -333,6 +380,58 @@ func runUninstall(cmd *cobra.Command, args []string) {
 	}
 
 	log.Info().Msg("Uninstall завершён, логи сохранены")
+}
+
+// failInput завершает работу с кодом 2: ошибка в запуске, без паники и стека.
+// Ни firewall, ни ipset, ни автозапуск к этому моменту не изменены.
+func failInput(log *logger.Logger, err error) {
+	log.Error().Err(err).Msg("Установка прервана: некорректные параметры запуска. Firewall, ipset и автозапуск не изменены")
+	fmt.Fprintf(os.Stderr, "rkn-guard: %v\n", err)
+	os.Exit(2)
+}
+
+// failPreflight завершает работу с кодом 3: проверка безопасности не пройдена,
+// изменения в системе не выполнялись.
+func failPreflight(log *logger.Logger, err error) {
+	log.Error().Msg("╔════════════════════════════════════════════════════════════╗")
+	log.Error().Msg("║  УСТАНОВКА ПРЕРВАНА: PREFLIGHT НЕ ПРОЙДЕН, ИЗМЕНЕНИЙ НЕТ    ║")
+	log.Error().Msg("╚════════════════════════════════════════════════════════════╝")
+	log.Error().Err(err).Msg("Проверка безопасности перед применением")
+	fmt.Fprintf(os.Stderr, "rkn-guard: %v\n", err)
+	os.Exit(3)
+}
+
+// checkMandatoryPorts проверяет через `ss -lntup`, что обязательные порты
+// слушаются, и что план правил не может их отрезать.
+func checkMandatoryPorts(cmdSvc *service.CommandService, iptablesSvc *service.IptablesService, log *logger.Logger) error {
+	ssOutput, err := cmdSvc.RunOutput("ss", "-lntup")
+	if err != nil {
+		// В минимальных образах iproute2 бывает без поддержки -p.
+		ssOutput, err = cmdSvc.RunOutput("ss", "-lntu")
+	}
+	if err != nil {
+		return fmt.Errorf("%w: не удалось выполнить ss -lntup: %v", service.ErrSSHUnverified, err)
+	}
+
+	sshPorts := service.SSHPortsFromEnv(os.Getenv)
+	report, err := service.CheckMandatoryPorts(requiredPorts, sshPorts, ssOutput)
+	log.Info().Ints("required_ports", requiredPorts).Ints("ssh_ports", sshPorts).Str("listen_state", report.String()).
+		Msg("Обязательные порты: состояние до применения правил")
+	for _, st := range report.Mandatory {
+		if st.Listening {
+			log.Info().Int("port", st.Port).Str("address", st.Address).Msg("Обязательный порт слушается")
+			continue
+		}
+		log.Warn().Int("port", st.Port).Msg("Обязательный порт не слушается: защищать нечего, но и отрезать его нельзя")
+	}
+	if err != nil {
+		return err
+	}
+	if unsafe := service.RulesMayBlockMandatoryPorts(iptablesSvc.PlannedRules(), requiredPorts); len(unsafe) > 0 {
+		return fmt.Errorf("%w: %s", service.ErrMandatoryPortBlocked, strings.Join(unsafe, "; "))
+	}
+	log.Info().Ints("protected_ports", report.ProtectedPorts()).Msg("План правил не затрагивает обязательные порты")
+	return nil
 }
 
 func confirmFromStdin() bool {

@@ -13,13 +13,31 @@ const (
 	chainName = "SCANNERS-BLOCK"
 )
 
+// iptablesCommands — операции над цепочками, нужные установщику.
+// Интерфейс позволяет проверять атомарность IPv4/IPv6 без живого netfilter.
+type iptablesCommands interface {
+	ChainExists(version IPVersion, table Table, chainName string) bool
+	CreateChain(version IPVersion, table Table, chainName string) error
+	DeleteChain(version IPVersion, table Table, chainName string) error
+	FlushChain(version IPVersion, table Table, chainName string) error
+	RuleExists(version IPVersion, table Table, chainName string, ruleSpec []string) bool
+	AppendRule(version IPVersion, table Table, chainName string, ruleSpec []string) error
+	InsertRule(version IPVersion, table Table, chainName string, position int, ruleSpec []string) error
+	DeleteRule(version IPVersion, table Table, chainName string, ruleSpec []string) error
+	DeleteRuleByNumber(version IPVersion, table Table, chainName string, ruleNum int) error
+	Save(version IPVersion, path string) error
+	LinkChainToInput(version IPVersion, chainName string, position int) error
+	UnlinkChainFromInput(version IPVersion, chainName string) error
+	ListChainRules(version IPVersion, table Table, chainName string) (string, error)
+}
+
 // IptablesService управляет правилами iptables и ip6tables.
 type IptablesService struct {
 	logger        zerolog.Logger
 	enableLogging bool
 	observeOnly   bool
 	cmdSvc        *CommandService
-	iptablesCmd   *IptablesCommandService
+	iptablesCmd   iptablesCommands
 }
 
 // SetObserveOnly включает режим наблюдения: firewall не изменяется.
@@ -37,7 +55,19 @@ func NewIptablesService(logger zerolog.Logger, cmdSvc *CommandService, enableLog
 	}
 }
 
+// chainState фиксирует, что установщик успел изменить в одном семействе IP.
+// Нужен, чтобы откатить частичное применение: либо оба набора (v4 и v6), либо ни одного.
+type chainState struct {
+	version  IPVersion
+	existed  bool
+	snapshot string
+	linked   bool
+}
+
 // SetupChain создаёт цепочки и добавляет правила.
+//
+// Атомарность IPv4/IPv6: если IPv6-часть падает, изменения IPv4 откатываются,
+// чтобы не осталось состояния «v4 защищён, v6 нет».
 func (s *IptablesService) SetupChain() error {
 	s.logger.Info().Msg("Настройка цепочек iptables")
 
@@ -58,30 +88,107 @@ func (s *IptablesService) SetupChain() error {
 	}
 
 	// Настраиваем IPv4.
-	if err := s.setupVersionChain(IPv4, ipsetV4Name, linkToInput); err != nil {
-		return fmt.Errorf("failed to setup IPv4 chain: %w", err)
+	v4, err := s.setupVersionChain(IPv4, ipsetV4Name, linkToInput)
+	if err != nil {
+		return errors.Join(fmt.Errorf("failed to setup IPv4 chain: %w", err), s.undoChainState(v4))
 	}
 
 	// Настраиваем IPv6.
-	if err := s.setupVersionChain(IPv6, ipsetV6Name, linkToInput); err != nil {
-		return fmt.Errorf("failed to setup IPv6 chain: %w", err)
+	v6, err := s.setupVersionChain(IPv6, ipsetV6Name, linkToInput)
+	if err != nil {
+		rollbackErr := errors.Join(s.undoChainState(v6), s.undoChainState(v4))
+		if rollbackErr != nil {
+			rollbackErr = fmt.Errorf("откат IPv4/IPv6 неполный, проверьте iptables-save: %w", rollbackErr)
+		}
+		return errors.Join(fmt.Errorf("failed to setup IPv6 chain: %w", err), rollbackErr)
 	}
 
 	s.logger.Info().Msg("Цепочки iptables настроены")
 	return nil
 }
 
+// undoChainState возвращает одно семейство к состоянию до setupVersionChain.
+func (s *IptablesService) undoChainState(st chainState) error {
+	if st.version == "" {
+		return nil // до изменений дело не дошло
+	}
+	var errs []error
+	if st.linked {
+		if err := s.iptablesCmd.UnlinkChainFromInput(st.version, chainName); err != nil {
+			errs = append(errs, fmt.Errorf("%s: снять привязку к INPUT: %w", st.version, err))
+		}
+	}
+	if !st.existed {
+		if err := s.iptablesCmd.FlushChain(st.version, TableFilter, chainName); err != nil {
+			errs = append(errs, fmt.Errorf("%s: очистить цепочку: %w", st.version, err))
+		}
+		if err := s.iptablesCmd.DeleteChain(st.version, TableFilter, chainName); err != nil {
+			errs = append(errs, fmt.Errorf("%s: удалить цепочку: %w", st.version, err))
+		}
+		return errors.Join(errs...)
+	}
+	// Цепочка была до установки: возвращаем её прежний набор правил.
+	if err := s.iptablesCmd.FlushChain(st.version, TableFilter, chainName); err != nil {
+		errs = append(errs, fmt.Errorf("%s: очистить цепочку: %w", st.version, err))
+		return errors.Join(errs...)
+	}
+	for _, rule := range chainRulesFromListing(st.snapshot) {
+		if err := s.iptablesCmd.AppendRule(st.version, TableFilter, chainName, rule); err != nil {
+			errs = append(errs, fmt.Errorf("%s: вернуть правило %v: %w", st.version, rule, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// chainRulesFromListing вытаскивает спецификации правил из вывода `iptables -S`.
+func chainRulesFromListing(listing string) [][]string {
+	var rules [][]string
+	for _, line := range strings.Split(listing, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[0] != "-A" {
+			continue
+		}
+		rules = append(rules, fields[2:])
+	}
+	return rules
+}
+
+// PlannedRules возвращает правила, которые установщик добавит в цепочку.
+// Используется preflight-проверкой обязательных портов (D9).
+func (s *IptablesService) PlannedRules() [][]string {
+	established := NewRuleBuilder().MatchConntrack("ESTABLISHED", "RELATED").Jump(TargetReturn).Build()
+	var rules [][]string
+	for _, ipsetName := range []string{ipsetV4Name, ipsetV6Name} {
+		rules = append(rules, established)
+		if s.enableLogging {
+			prefix := "ANTISCAN-v4: "
+			if ipsetName == ipsetV6Name {
+				prefix = "ANTISCAN-v6: "
+			}
+			rules = append(rules, NewRuleBuilder().MatchSet(ipsetName, "src").MatchLimit("10/min", "5").
+				Jump(TargetLog).LogPrefix(prefix).LogLevel("4").Build())
+		}
+		rules = append(rules, NewRuleBuilder().MatchSet(ipsetName, "src").Jump(TargetDrop).Build())
+	}
+	return rules
+}
+
 // setupVersionChain настраивает SCANNERS-BLOCK для выбранной версии IP.
-func (s *IptablesService) setupVersionChain(version IPVersion, ipsetName string, linkToInput bool) error {
+// Возвращает состояние для отката даже при ошибке.
+func (s *IptablesService) setupVersionChain(version IPVersion, ipsetName string, linkToInput bool) (chainState, error) {
 	s.logger.Debug().Str("version", string(version)).Msg("Настройка цепочки")
 
+	st := chainState{version: version}
 	// Проверяем, существует ли цепочка.
 	// При повторной установке добавляем недостающие правила, не снимая защиту.
-	if !s.iptablesCmd.ChainExists(version, TableFilter, chainName) {
+	if st.existed = s.iptablesCmd.ChainExists(version, TableFilter, chainName); !st.existed {
 		s.logger.Info().Str("chain", chainName).Str("version", string(version)).Msg("Создание цепочки")
 		if err := s.iptablesCmd.CreateChain(version, TableFilter, chainName); err != nil {
-			return fmt.Errorf("failed to create chain: %w", err)
+			st.version = ""
+			return st, fmt.Errorf("failed to create chain: %w", err)
 		}
+	} else if listing, err := s.iptablesCmd.ListChainRules(version, TableFilter, chainName); err == nil {
+		st.snapshot = listing
 	}
 
 	// Без UFW подключаем нашу цепочку напрямую к INPUT.
@@ -89,8 +196,9 @@ func (s *IptablesService) setupVersionChain(version IPVersion, ipsetName string,
 		if !s.iptablesCmd.RuleExists(version, TableFilter, string(ChainInput), []string{"-j", chainName}) {
 			s.logger.Info().Str("version", string(version)).Msg("Привязка цепочки к INPUT")
 			if err := s.iptablesCmd.LinkChainToInput(version, chainName, 1); err != nil {
-				return fmt.Errorf("failed to link chain to INPUT: %w", err)
+				return st, fmt.Errorf("failed to link chain to INPUT: %w", err)
 			}
+			st.linked = true
 		}
 	}
 
@@ -102,7 +210,7 @@ func (s *IptablesService) setupVersionChain(version IPVersion, ipsetName string,
 	if !s.iptablesCmd.RuleExists(version, TableFilter, chainName, establishedRule) {
 		s.logger.Info().Str("version", string(version)).Msg("Добавление правила для установленных соединений")
 		if err := s.iptablesCmd.InsertRule(version, TableFilter, chainName, 1, establishedRule); err != nil {
-			return fmt.Errorf("failed to add ESTABLISHED rule: %w", err)
+			return st, fmt.Errorf("failed to add ESTABLISHED rule: %w", err)
 		}
 	}
 
@@ -123,7 +231,7 @@ func (s *IptablesService) setupVersionChain(version IPVersion, ipsetName string,
 		if !s.iptablesCmd.RuleExists(version, TableFilter, chainName, logRule) {
 			s.logger.Info().Str("version", string(version)).Msg("Добавление правила логирования")
 			if err := s.iptablesCmd.InsertRule(version, TableFilter, chainName, 2, logRule); err != nil {
-				return fmt.Errorf("failed to add LOG rule: %w", err)
+				return st, fmt.Errorf("failed to add LOG rule: %w", err)
 			}
 		}
 	}
@@ -133,15 +241,18 @@ func (s *IptablesService) setupVersionChain(version IPVersion, ipsetName string,
 	if !s.iptablesCmd.RuleExists(version, TableFilter, chainName, dropRule) {
 		s.logger.Info().Str("version", string(version)).Msg("Добавление правила блокировки")
 		if err := s.iptablesCmd.AppendRule(version, TableFilter, chainName, dropRule); err != nil {
-			return fmt.Errorf("failed to add DROP rule: %w", err)
+			return st, fmt.Errorf("failed to add DROP rule: %w", err)
 		}
 	}
 
 	entries, err := LoadExceptions(ExceptionsPath)
 	if err != nil {
-		return err
+		return st, err
 	}
-	return s.syncExceptions(entries, version)
+	if err := s.syncExceptions(entries, version); err != nil {
+		return st, err
+	}
+	return st, nil
 }
 
 // Save сохраняет правила доступным в системе способом.
