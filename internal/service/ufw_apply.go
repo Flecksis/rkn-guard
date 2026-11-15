@@ -49,12 +49,16 @@ func verifyUFWJumps(cmd firewallCommands) error {
 	return nil
 }
 
+// applyUFW применяет правила UFW, не меняя состояние firewall.
+//
+// UFW, выключенный до установки, НЕ включается: включение с политикой DROP и
+// единственным правилом SSH закрывает VPN-порты. В этом случае возвращается
+// ErrUFWInactive и ни одна команда ufw не выполняется.
 func applyUFW(cmd firewallCommands, wasActive bool) error {
-	args := []string{"reload"}
 	if !wasActive {
-		args = []string{"--force", "enable"}
+		return ErrUFWInactive
 	}
-	if err := cmd.Run("ufw", args...); err != nil {
+	if err := cmd.Run("ufw", "reload"); err != nil {
 		return fmt.Errorf("apply UFW rules: %w", err)
 	}
 	status, err := cmd.RunOutput("ufw", "status")

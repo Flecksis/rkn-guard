@@ -17,8 +17,14 @@ const (
 type IptablesService struct {
 	logger        zerolog.Logger
 	enableLogging bool
+	observeOnly   bool
 	cmdSvc        *CommandService
 	iptablesCmd   *IptablesCommandService
+}
+
+// SetObserveOnly включает режим наблюдения: firewall не изменяется.
+func (s *IptablesService) SetObserveOnly(v bool) {
+	s.observeOnly = v
 }
 
 // NewIptablesService создаёт сервис управления iptables.
@@ -34,6 +40,12 @@ func NewIptablesService(logger zerolog.Logger, cmdSvc *CommandService, enableLog
 // SetupChain создаёт цепочки и добавляет правила.
 func (s *IptablesService) SetupChain() error {
 	s.logger.Info().Msg("Настройка цепочек iptables")
+
+	// FIX-1: в режиме наблюдения firewall не трогаем.
+	if s.observeOnly {
+		s.logger.Warn().Msg("Режим --observe-only: цепочки iptables не создаются")
+		return nil
+	}
 
 	if _, err := LoadExceptions(ExceptionsPath); err != nil {
 		return err
@@ -136,6 +148,12 @@ func (s *IptablesService) setupVersionChain(version IPVersion, ipsetName string,
 func (s *IptablesService) Save() error {
 	s.logger.Info().Msg("Сохранение правил iptables")
 
+	// FIX-1: режим наблюдения не меняет firewall.
+	if s.observeOnly {
+		s.logger.Warn().Msg("Режим --observe-only: правила не применяются, firewall не изменяется")
+		return nil
+	}
+
 	// Если UFW установлен, используем его, даже если он пока выключен.
 	if s.cmdSvc.CommandExists("ufw") {
 		s.logger.Info().Msg("UFW обнаружен - интеграция с UFW")
@@ -207,72 +225,16 @@ func (s *IptablesService) saveWithUFW() (result error) {
 	}
 	wasActive := strings.Contains(status, "Status: active")
 	if !wasActive {
-		s.logger.Warn().Msg("⚠️  UFW установлен но неактивен - проверка правил SSH перед включением")
-
-		// Ищем правило SSH в user.rules и user6.rules.
-		hasSSH := false
-
-		// Сначала проверяем user.rules.
-		if content, err := os.ReadFile("/etc/ufw/user.rules"); err == nil {
-			rules := string(content)
-			if strings.Contains(rules, "dport 22") || strings.Contains(rules, "dport ssh") {
-				hasSSH = true
-			}
-		}
-
-		// Затем проверяем user6.rules.
-		if !hasSSH {
-			if content, err := os.ReadFile("/etc/ufw/user6.rules"); err == nil {
-				rules := string(content)
-				if strings.Contains(rules, "dport 22") || strings.Contains(rules, "dport ssh") {
-					hasSSH = true
-				}
-			}
-		}
-
-		// Дополнительно проверяем правила через команду UFW.
-		if !hasSSH {
-			if output, err := s.cmdSvc.RunOutput("ufw", "show", "added"); err == nil {
-				if strings.Contains(output, "22/tcp") || strings.Contains(output, "22") || strings.Contains(output, "OpenSSH") || strings.Contains(output, "ssh") {
-					hasSSH = true
-				}
-			}
-		}
-
-		if !hasSSH {
-			s.logger.Error().Msg("╔════════════════════════════════════════════════════════════╗")
-			s.logger.Error().Msg("║  ⚠️  КРИТИЧЕСКАЯ ОШИБКА - ПРЕДОТВРАЩЕНИЕ БЛОКИРОВКИ  ⚠️    ║")
-			s.logger.Error().Msg("╚════════════════════════════════════════════════════════════╝")
-			s.logger.Error().Msg("")
-			s.logger.Error().Msg("UFW установлен но НЕ имеет правил для SSH!")
-			s.logger.Error().Msg("Включение UFW БЕЗ правил SSH ЗАБЛОКИРУЕТ удалённый доступ к серверу!")
-			s.logger.Error().Msg("")
-			s.logger.Error().Msg("═══ ШАГ 1: Разрешите SSH в UFW ═══")
-			s.logger.Error().Msg("")
-			s.logger.Error().Msg("Выполните ОДНУ из команд:")
-			s.logger.Error().Msg("  sudo ufw allow 22/tcp     # Разрешить TCP порт 22")
-			s.logger.Error().Msg("  sudo ufw allow OpenSSH    # Разрешить OpenSSH (рекомендуется)")
-			s.logger.Error().Msg("  sudo ufw allow ssh        # Разрешить SSH сервис")
-			s.logger.Error().Msg("")
-			s.logger.Error().Msg("Проверьте правило:")
-			s.logger.Error().Msg("  sudo ufw show added")
-			s.logger.Error().Msg("")
-			s.logger.Error().Msg("═══ ШАГ 2: Повторите установку rkn-guard ═══")
-			s.logger.Error().Msg("")
-			s.logger.Error().Msg("  sudo rkn-guard full")
-			s.logger.Error().Msg("")
-			s.logger.Error().Msg("═══ АЛЬТЕРНАТИВА: Удалить UFW ═══")
-			s.logger.Error().Msg("")
-			s.logger.Error().Msg("Если UFW не нужен:")
-			s.logger.Error().Msg("  sudo apt remove --purge ufw")
-			s.logger.Error().Msg("")
-			s.logger.Error().Msg("antiscan будет работать с iptables напрямую")
-			s.logger.Error().Msg("")
-			return fmt.Errorf("SSH not allowed in UFW - installation aborted to prevent server lockout")
-		}
-
-		s.logger.Info().Msg("✓ Правило SSH найдено в конфигурации UFW")
+		// FIX-1: UFW, выключенный до установки, не включается автоматически.
+		// Политику INPUT не меняем: включение UFW с DROP и единственным правилом
+		// SSH закрыло бы VPN-порты. Правила некуда ставить — установка падает
+		// с ErrUFWInactive, firewall остаётся нетронутым.
+		s.logger.Error().Msg("UFW установлен, но выключен — правила не применяются, firewall не изменяется")
+		return fmt.Errorf("%w. Разрешите нужные порты (ufw allow <port>/tcp), включите UFW вручную "+
+			"(ufw enable) и повторите установку, либо удалите ufw, чтобы rkn-guard работал через "+
+			"netfilter-persistent. Автовключения UFW нет намеренно", ErrUFWInactive)
 	}
+	s.logger.Info().Msg("UFW активен — правила ставятся в ufw-before-input и применяются reload'ом")
 
 	// UFW сохраняет правила автоматически
 	// Нужно только добавить наши правила в before.rules

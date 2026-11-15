@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -15,13 +16,15 @@ import (
 )
 
 var (
-	urls          []string
-	enableLogging bool
-	confirmYes    bool
-	removeLogs    bool
-	logLevel      string
-	version       = "dev" // Версия будет устанавливаться при сборке через -ldflags
-	branch        = "unknown"
+	urls             []string
+	enableLogging    bool
+	observeOnly      bool
+	noFirewallChange bool
+	confirmYes       bool
+	removeLogs       bool
+	logLevel         string
+	version          = "dev" // Версия будет устанавливаться при сборке через -ldflags
+	branch           = "unknown"
 )
 
 func main() {
@@ -55,6 +58,8 @@ func main() {
 	fullCmd.Flags().StringSliceVarP(&urls, "urls", "u", []string{}, "Список URL для скачивания подсетей")
 	fullCmd.Flags().BoolVarP(&enableLogging, "enable-logging", "l", false, "Включить логирование заблокированных подключений")
 	fullCmd.Flags().BoolVar(&managedLists, "managed-lists", false, "Учесть дополнительные списки и сохранённые копии источников")
+	fullCmd.Flags().BoolVar(&observeOnly, "observe-only", false, "Ничего не менять в firewall: только показать план и скачанные списки")
+	fullCmd.Flags().BoolVar(&noFirewallChange, "no-firewall-changes", false, "Не менять firewall; завершиться ошибкой, если правила некуда ставить")
 
 	updateCmd := &cobra.Command{
 		Use:   "update",
@@ -74,7 +79,20 @@ func main() {
 	uninstallCmd.Flags().BoolVar(&confirmYes, "yes", false, "Подтвердить удаление без интерактивного запроса")
 	uninstallCmd.Flags().BoolVar(&removeLogs, "remove-logs", false, "Удалить логи rkn-guard из /var/log")
 
+	rollbackCmd := &cobra.Command{
+		Use:   "rollback",
+		Short: "Вернуть firewall и автозапуск к состоянию до установки (по снимку)",
+		Long: `Восстанавливает UFW (статус и политики), before.rules/user.rules, iptables/ip6tables,
+ipset-наборы и состояние автозапуска сервисов из снимка, снятого перед установкой.
+
+Операция идемпотентна: повторный запуск ничего не меняет.`,
+		Run: runRollback,
+	}
+	rollbackCmd.Flags().BoolVar(&confirmYes, "yes", false, "Не спрашивать подтверждение")
+	rollbackCmd.Flags().BoolVar(&observeOnly, "observe-only", false, "Только показать снимок, ничего не восстанавливая")
+
 	rootCmd.AddCommand(fullCmd)
+	rootCmd.AddCommand(rollbackCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(uninstallCmd)
 	rootCmd.AddCommand(newSourcesCommand())
@@ -159,23 +177,23 @@ func runFull(cmd *cobra.Command, args []string) {
 		log.Fatal().Err(err).Msg("Failed to download subnets")
 	}
 
-	// Предупреждаем о необходимости разрешить SSH в UFW.
-	if cmdSvc.CommandExists("ufw") {
-		output, err := cmdSvc.RunOutput("ufw", "status")
-		isActive := err == nil && strings.Contains(output, "Status: active")
-
-		if !isActive {
-			log.Warn().Msg("⚠️  UFW установлен но неактивен")
-			log.Warn().Msg("⚠️  ВНИМАНИЕ: Если UFW не имеет правил для SSH, включение UFW заблокирует доступ!")
-			log.Warn().Msg("")
-			log.Warn().Msg("Убедитесь что SSH разрешён:")
-			log.Warn().Msg("  sudo ufw allow 22/tcp")
-			log.Warn().Msg("  sudo ufw allow OpenSSH")
-			log.Warn().Msg("")
-			log.Warn().Msg("rkn-guard проверит наличие правил SSH и прервёт установку если их нет")
-			log.Warn().Msg("")
-		}
+	// FIX-1: состояние firewall проверяется ДО любых изменений в системе.
+	// UFW не включается автоматически и политика INPUT не меняется.
+	plan, err := service.PlanFirewall(cmdSvc, cmdSvc.CommandExists, observeOnly || noFirewallChange)
+	if err != nil {
+		log.Error().Msg("╔════════════════════════════════════════════════════════════╗")
+		log.Error().Msg("║  УСТАНОВКА ПРЕРВАНА: FIREWALL НЕ ИЗМЕНЁН                   ║")
+		log.Error().Msg("╚════════════════════════════════════════════════════════════╝")
+		log.Error().Err(err).Msg("Правила некуда ставить")
+		log.Error().Msg("Подсказка: ufw status verbose; ufw allow <vpn-port>/tcp; ufw enable — затем повторите установку")
+		os.Exit(3)
 	}
+	if plan.ObserveOnly {
+		log.Warn().Msg("Режим наблюдения (--observe-only/--no-firewall-changes): firewall, ipset и systemd не изменяются")
+	} else if plan.UFWPresent && plan.UFWActive {
+		log.Info().Msg("UFW активен: правила будут добавлены в ufw-before-input и применены reload'ом")
+	}
+	iptablesSvc.SetObserveOnly(plan.ObserveOnly)
 
 	// Проверяем зависимости.
 	if err := installer.EnsureDependencies(); err != nil {
@@ -186,6 +204,22 @@ func runFull(cmd *cobra.Command, args []string) {
 	if err := installer.EnsureNetfilterPersistent(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to install netfilter-persistent")
 	}
+
+	// Режим наблюдения: дальше не идём — ничего не меняем.
+	if plan.ObserveOnly {
+		log.Info().Int("sources", len(urls)).Msg("Режим наблюдения: списки получены, изменения в системе не выполнялись")
+		log.Info().Msg("Firewall, ipset, правила и автозапуск не изменялись")
+		return
+	}
+
+	// FIX-2: снимок состояния до любых изменений. Из него uninstall/rollback
+	// возвращает firewall и автозапуск к baseline.
+	snapshotter := service.NewSnapshotter(log.Logger, cmdSvc, cmdSvc.CommandExists)
+	snap, err := snapshotter.Save()
+	if err != nil {
+		log.Fatal().Err(err).Msg("Не удалось снять снимок состояния firewall; установка прервана, изменений нет")
+	}
+	log.Info().Str("snapshot", service.FormatSnapshotReport(snap)).Str("dir", service.SnapshotDir).Msg("Снимок состояния до установки сохранён")
 
 	// Готовим, заменяем и сохраняем наборы до настройки правил firewall.
 	if err := applySourceNetworks(ipsetSvc, networks); err != nil {
@@ -211,7 +245,7 @@ func runFull(cmd *cobra.Command, args []string) {
 		log.Error().Msg("║  ❌ УСТАНОВКА ПРЕРВАНА - КРИТИЧЕСКАЯ ОШИБКА                 ║")
 		log.Error().Msg("╚════════════════════════════════════════════════════════════╝")
 		log.Error().Msg("")
-		log.Fatal().Err(err).Msg("Не удалось сохранить правила iptables")
+		log.Fatal().Err(err).Msg("Не удалось сохранить правила iptables. Вернуть system к baseline: rkn-guard rollback --yes")
 	}
 
 	if loggingErr != nil {
@@ -310,4 +344,45 @@ func confirmFromStdin() bool {
 
 	response = strings.TrimSpace(strings.ToLower(response))
 	return response == "y" || response == "yes"
+}
+
+// runRollback возвращает firewall и автозапуск к снимку, снятому до установки.
+func runRollback(cmd *cobra.Command, args []string) {
+	lock, err := service.AcquireLock()
+	if err != nil {
+		logger.Global().Fatal().Err(err).Msg("Cannot acquire operation lock")
+	}
+	defer lock.Close()
+
+	log := logger.Global()
+	cmdSvc := service.NewCommandService(log.Logger)
+	snapshotter := service.NewSnapshotter(log.Logger, cmdSvc, cmdSvc.CommandExists)
+
+	snap, err := snapshotter.Load()
+	if errors.Is(err, service.ErrNoSnapshot) {
+		log.Fatal().Err(err).Msg("Снимок состояния не найден: откатываться некуда. Установите rkn-guard заново, чтобы снимок был создан")
+	}
+	if err != nil {
+		log.Fatal().Err(err).Msg("Не удалось прочитать снимок состояния")
+	}
+	log.Info().Str("snapshot", service.FormatSnapshotReport(snap)).Time("created_at", snap.CreatedAt).Msg("Найден снимок состояния")
+
+	if observeOnly {
+		log.Info().Msg("Режим наблюдения: снимок показан, восстановление не выполнялось")
+		return
+	}
+
+	if !confirmYes {
+		fmt.Printf("Вернуть firewall к снимку от %s? [y/N]: ", snap.CreatedAt.Format(time.RFC3339))
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		if strings.TrimSpace(strings.ToLower(line)) != "y" {
+			log.Info().Msg("Откат отменён")
+			return
+		}
+	}
+
+	if err := snapshotter.Restore(snap); err != nil {
+		log.Fatal().Err(err).Msg("Откат завершён с ошибками: состояние firewall не совпало со снимком")
+	}
+	log.Info().Msg("Firewall и автозапуск возвращены к состоянию до установки")
 }

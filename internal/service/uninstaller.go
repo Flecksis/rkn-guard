@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,6 +46,9 @@ func (s *UninstallerService) Uninstall(removeLogs bool) error {
 	s.cleanupIPSet()
 	s.removeArtifacts(removeLogs)
 
+	// FIX-2: возвращаем firewall/автозапуск к снимку, снятому до установки.
+	snapshotErr := s.restoreFirewallSnapshot()
+
 	if err := s.reloadSystemdDaemon(); err != nil {
 		s.logger.Warn().Err(err).Msg("Failed to reload systemd daemon")
 	}
@@ -53,11 +57,49 @@ func (s *UninstallerService) Uninstall(removeLogs bool) error {
 		s.logger.Warn().Err(err).Msg("Failed to reload rsyslog")
 	}
 
-	if err := s.persistFirewallState(); err != nil {
-		return fmt.Errorf("failed to persist firewall state: %w", err)
+	// Если снимок восстановлен, состояние firewall уже приведено к baseline и
+	// сохранять его повторно не нужно.
+	if snapshotErr != nil {
+		if err := s.persistFirewallState(); err != nil {
+			return errors.Join(snapshotErr, fmt.Errorf("failed to persist firewall state: %w", err))
+		}
+		return fmt.Errorf("baseline не восстановлен полностью: %w", snapshotErr)
+	}
+	if !s.snapshotter().Exists() {
+		if err := s.persistFirewallState(); err != nil {
+			return fmt.Errorf("failed to persist firewall state: %w", err)
+		}
 	}
 
 	s.logger.Info().Msg("rkn-guard uninstall completed")
+	return nil
+}
+
+// snapshotter возвращает снимок состояния firewall.
+func (s *UninstallerService) snapshotter() *Snapshotter {
+	return NewSnapshotter(s.logger, s.cmdSvc, s.cmdSvc.CommandExists)
+}
+
+// restoreFirewallSnapshot возвращает UFW/iptables/ipset/автозапуск к состоянию
+// снимка, снятого перед установкой (FIX-2).
+//
+// Без снимка baseline неизвестен: uninstall честно об этом сообщает и НЕ
+// выключает/включает UFW, чтобы не сделать хуже.
+func (s *UninstallerService) restoreFirewallSnapshot() error {
+	snap := s.snapshotter()
+	if !snap.Exists() {
+		s.logger.Warn().Msg("Снимок состояния до установки не найден: baseline firewall не изменяется (UFW не включается и не выключается)")
+		return nil
+	}
+	loaded, err := snap.Load()
+	if err != nil {
+		return err
+	}
+	s.logger.Info().Str("snapshot", FormatSnapshotReport(loaded)).Msg("Восстановление состояния firewall из снимка")
+	if err := snap.Restore(loaded); err != nil {
+		return err
+	}
+	s.logger.Info().Msg("Состояние firewall возвращено к снимку до установки")
 	return nil
 }
 
