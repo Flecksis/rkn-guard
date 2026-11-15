@@ -168,15 +168,6 @@ func runFull(cmd *cobra.Command, args []string) {
 		log.Panic().Msg("Не указаны URL для скачивания подсетей. Используйте флаг --urls")
 	}
 
-	networks, _, err := downloadConfiguredLists(downloader)
-	if errors.Is(err, service.ErrNoSourceData) {
-		log.Fatal().Msg("Списки недоступны и пригодного кэша нет. Установка не завершена; действующие наборы и правила не изменены.")
-		return
-	}
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to download subnets")
-	}
-
 	// FIX-1: состояние firewall проверяется ДО любых изменений в системе.
 	// UFW не включается автоматически и политика INPUT не меняется.
 	plan, err := service.PlanFirewall(cmdSvc, cmdSvc.CommandExists, observeOnly || noFirewallChange)
@@ -194,6 +185,15 @@ func runFull(cmd *cobra.Command, args []string) {
 		log.Info().Msg("UFW активен: правила будут добавлены в ufw-before-input и применены reload'ом")
 	}
 	iptablesSvc.SetObserveOnly(plan.ObserveOnly)
+
+	networks, _, err := downloadConfiguredLists(downloader)
+	if errors.Is(err, service.ErrNoSourceData) {
+		log.Fatal().Msg("Списки недоступны и пригодного кэша нет. Установка не завершена; действующие наборы и правила не изменены.")
+		return
+	}
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to download subnets")
+	}
 
 	// Проверяем зависимости.
 	if err := installer.EnsureDependencies(); err != nil {
