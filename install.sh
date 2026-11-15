@@ -157,23 +157,35 @@ check_firewall_safety() {
 }
 
 # check_docker_bridge — FIX-4: честное предупреждение о Docker.
-# UFW/iptables-правила хоста не фильтруют DNAT'нутый трафик опубликованных
-# портов контейнеров: он идёт через FORWARD/DOCKER-USER. rkn-guard не правит
-# служебные цепочки Docker, поэтому предупреждаем и показываем, где смотреть.
+# Публикация портов через bridge (`-p 443:443`) идёт nat/DOCKER DNAT -> FORWARD,
+# поэтому хостовый INPUT и цепочка SCANNERS-BLOCK в ufw-before-input такой трафик
+# не видят: в FORWARD пакет приходит с src 172.17.0.1 (адрес docker0), а не с
+# адреса сканера. rkn-guard служебные цепочки Docker не правит, поэтому
+# предупреждаем и показываем, где ставить правило.
 check_docker_bridge() {
     command -v docker >/dev/null 2>&1 || return 0
-    local published
-    published=$(docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -E '0\.0\.0\.0:|:::' || true)
+    local published bridge_published host_containers
+    published=$(docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null || true)
     [[ -n "$published" ]] || return 0
-    echo -e "\n${YELLOW}⚠️  Обнаружен Docker с опубликованными портами:${NC}"
-    printf '%s\n' "$published" | sed 's/^/    /'
-    echo -e "${YELLOW}   UFW (и цепочка SCANNERS-BLOCK в ufw-before-input) НЕ фильтрует"
-    echo -e "   такие порты: пакеты приходят через nat/DNAT и FORWARD/DOCKER-USER."
-    echo -e "   rkn-guard служебные цепочки Docker не изменяет. Если блокировка нужна"
-    echo -e "   и для контейнеров, добавьте правило в DOCKER-USER вручную, например:${NC}"
-    echo "     iptables -I DOCKER-USER -m set --match-set SCANNERS-BLOCK-V4 src -j DROP"
+    bridge_published=$(printf '%s\n' "$published" | grep -E '0\.0\.0\.0:|:::' || true)
+    host_containers=$(docker ps --format '{{.Names}} {{.Networks}}' 2>/dev/null | awk '$2 !~ /bridge/ {print $1}' || true)
+    [[ -n "$bridge_published" ]] || return 0
+    echo -e "\n${YELLOW}⚠️  Обнаружен Docker с опубликованными портами (bridge):${NC}"
+    printf '%s\n' "$bridge_published" | sed 's/^/    /'
+    echo -e "${YELLOW}   Такие порты НЕ фильтруются rkn-guard:${NC}"
+    echo "     - пакет идёт nat/PREROUTING -> DOCKER DNAT -> FORWARD, хостовый INPUT не участвует;"
+    echo "     - в FORWARD источник уже 172.17.0.1 (docker0), а не адрес сканера;"
+    echo "     - правила rkn-guard стоят в INPUT / ufw-before-input и матчат --match-set ... src."
+    echo -e "${YELLOW}   Контейнеры с --network host фильтруются как обычные процессы хоста.${NC}"
+    echo -e "${YELLOW}   Если блокировка нужна и для bridge-контейнеров, добавьте вручную:${NC}"
+    echo "     iptables  -I DOCKER-USER 1 -m set --match-set SCANNERS-BLOCK-V4 src -j DROP"
+    echo "     ip6tables -I DOCKER-USER 1 -m set --match-set SCANNERS-BLOCK-V6 src -j DROP"
     echo "   Проверка: iptables -S DOCKER-USER; iptables -t nat -S DOCKER"
+    if [[ -n "$host_containers" ]]; then
+        echo "   host-network контейнеры (фильтруются): $(echo $host_containers)"
+    fi
     echo ""
+    return 0
 }
 
 terminal_unavailable() {
