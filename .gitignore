@@ -33,3 +33,11 @@ go.work.sum
 
 # Build output
 bin/
+
+# Graphify:
+graphify-out/
+.agents/skills/graphify/
+.codex/skills/graphify/
+
+# Python test cache
+__pycache__/

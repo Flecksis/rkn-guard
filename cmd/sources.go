@@ -69,6 +69,18 @@ func sourceStore(downloader *service.Downloader) *service.SourceStore {
 }
 
 func applySourceNetworks(ipsets *service.IpsetService, networks *domain.NetworkList) error {
+	state, err := service.LoadFirewall()
+	if err != nil {
+		return err
+	}
+	if state.Backend != "iptables" {
+		state.Networks = *networks
+		return service.CommitNFTState(service.NewCommandService(logger.Global().Logger), state, true)
+	}
+	return applyLegacySourceNetworks(ipsets, networks)
+}
+
+func applyLegacySourceNetworks(ipsets *service.IpsetService, networks *domain.NetworkList) error {
 	if err := service.AddManualNetworks(networks); err != nil {
 		return err
 	}

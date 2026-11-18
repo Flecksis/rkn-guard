@@ -47,6 +47,13 @@ func AddManualNetworks(networks *domain.NetworkList) error {
 }
 
 func (s *IpsetService) ChangeManualIP(action, ip string) (message string, result error) {
+	state, err := LoadFirewall()
+	if err != nil {
+		return "", err
+	}
+	if state.Backend != "iptables" {
+		return s.changeNFTManualIP(state, action, ip)
+	}
 	addr, err := netip.ParseAddr(ip)
 	if err != nil || addr.Zone() != "" {
 		return "", fmt.Errorf("укажите один IP без маски и зоны")
@@ -172,4 +179,51 @@ func (s *IpsetService) ChangeManualIP(action, ip string) (message string, result
 		}
 	}
 	return "Ручной бан удалён. Совпадений по подсети нет; обновление списков может вернуть блокировку.", nil
+}
+
+func (s *IpsetService) changeNFTManualIP(state *FirewallState, action, ip string) (string, error) {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || addr.Zone() != "" {
+		return "", fmt.Errorf("укажите один IP без маски и зоны")
+	}
+	ip = addr.Unmap().String()
+	entries, err := LoadManualIPs()
+	if err != nil {
+		return "", err
+	}
+	next := []string{}
+	found := false
+	for _, entry := range entries {
+		if entry == ip {
+			found = true
+		} else {
+			next = append(next, entry)
+		}
+	}
+	switch action {
+	case "add":
+		if found {
+			return "", fmt.Errorf("ручной бан уже есть")
+		}
+		next = append(next, ip)
+	case "delete":
+		if !found {
+			return "", fmt.Errorf("ручного бана нет; для подсети используйте исключение")
+		}
+	default:
+		return "", fmt.Errorf("неизвестное действие")
+	}
+	save := func(values []string) error {
+		return atomicWriteFile(ManualIPsPath, []byte(strings.Join(values, "\n")+"\n"), 0600)
+	}
+	if err := save(next); err != nil {
+		return "", err
+	}
+	if err := ApplyNFTState(s.cmdSvc, state, true); err != nil {
+		return "", errors.Join(err, save(entries), ApplyNFTState(s.cmdSvc, state, true))
+	}
+	if action == "add" {
+		return "Ручной бан добавлен и сохранён.", nil
+	}
+	return "Ручной бан удалён. Если адрес входит в заблокированную подсеть, используйте исключение.", nil
 }

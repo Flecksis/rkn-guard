@@ -61,6 +61,60 @@ class ScheduleTests(unittest.TestCase):
                 for p in self.root.rglob("*") if p.is_file()
                 and (p.parent.name == "units" or p.name in ("schedule.conf", "enabled", "active"))}
 
+    def test_firewall_choice(self):
+        for answer, expected in [('1', 'auto'), ('', 'auto'), ('2', 'iptables'), ('3', 'nftables'), ('4', 'firewalld')]:
+            (self.root / 'input').write_text('wrong\n' + answer + '\n')
+            output = self.run_shell(r'''
+exec 3< "$TEST_DIR/input"
+read_cancellable_input() { builtin read -r "$@" <&3; }
+choose_firewall
+printf 'selected=%s\n' "$FIREWALL_CHOICE"
+''')
+            self.assertIn('selected=' + expected, output)
+
+    def test_firewall_labels_and_legacy_menu(self):
+        output = self.run_shell(r'''
+FIREWALL_CONFIG_FILE="$TEST_DIR/firewall.json"
+ufw() { echo 'Status: inactive'; }
+rkn-guard() { echo unexpected-call; return 1; }
+refresh_firewall_status
+echo "legacy=$FW_MODE:$FW_LABEL"
+touch "$FIREWALL_CONFIG_FILE"
+rkn-guard() { printf 'nftables\n42\n'; }
+refresh_firewall_status
+echo "native=$FW_MODE:$FW_LABEL"
+rkn-guard() { printf 'firewalld\n42\n'; }
+refresh_firewall_status
+echo "managed=$FW_MODE:$FW_LABEL"
+rkn-guard() { return 1; }
+refresh_firewall_status
+echo "failed=$FW_MODE:$FW_LABEL"
+rm "$FIREWALL_CONFIG_FILE"
+ufw() { echo 'Status: active'; }
+refresh_firewall_status
+echo "old=$FW_MODE:$FW_LABEL"
+''')
+        self.assertIn('legacy=iptables:iptables + ipset', output)
+        self.assertNotIn('unexpected-call', output)
+        self.assertIn('native=nftables:nftables', output)
+        self.assertIn('managed=firewalld:firewalld + nftables', output)
+        self.assertIn('failed=unknown:ошибка чтения настроек', output)
+        self.assertIn('old=iptables:UFW (iptables + ipset)', output)
+
+    def test_uninstall_missing_binary_preserves_new_configuration(self):
+        menu = self.root / 'menu.sh'
+        menu.write_text(menu.read_text().replace('/dev/tty', '/dev/null'))
+        self.run_shell(r'''
+FIREWALL_CONFIG_FILE="$TEST_DIR/firewall.json"
+touch "$FIREWALL_CONFIG_FILE"
+read() { confirm=y; }
+command() { if [[ "$*" == '-v rkn-guard' ]]; then return 1; fi; builtin command "$@"; }
+remove_update_schedule() { touch "$TEST_DIR/unexpected-removal"; }
+uninstall_process
+''', status=1)
+        self.assertTrue((self.root / 'firewall.json').exists())
+        self.assertFalse((self.root / 'unexpected-removal').exists())
+
     def test_input_normalization(self):
         for mode, value, expected in [
             ("off", "", ""), ("interval", "001", "1"), ("interval", "168", "168"),
@@ -177,6 +231,7 @@ exec 3< "$TEST_DIR/input"
 MANUAL_FILE="$TEST_DIR/manual.list"
 read_cancellable_input() { builtin read -r "$@" <&3 || terminal_unavailable; }
 check_firewall_safety() { :; }
+choose_firewall() { FIREWALL_CHOICE=auto; }
 clear() { :; }
 apt-get() { :; }
 rsyslogd() { :; }
@@ -192,7 +247,7 @@ systemctl() {
         *) mock_systemctl "$@" ;;
     esac
 }
-rkn-guard() { printf '%s\n' "$*" >> "$TEST_DIR/installed"; }
+rkn-guard() { if [[ "$1" == firewall-select ]]; then echo nftables; else printf '%s\n' "$*" >> "$TEST_DIR/installed"; fi; }
 install_process
 ''')
         self.assertIn("full -u https://", (self.root / "installed").read_text())
@@ -203,6 +258,7 @@ install_process
             output = self.run_shell(r'''
 clear() { :; }
 check_firewall_safety() { :; }
+choose_firewall() { FIREWALL_CHOICE=auto; }
 apt-get() { [[ "$1" != "$FAIL_APT" ]]; }
 systemctl() { echo unexpected-service; return 99; }
 rkn-guard() { echo unexpected-firewall; return 99; }

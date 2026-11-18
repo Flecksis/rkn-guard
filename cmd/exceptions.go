@@ -39,9 +39,16 @@ func newExceptionsCommand() *cobra.Command {
 			return err
 		}
 		commands := service.NewCommandService(logger.Global().Logger)
-		rules, err := commands.RunOutput("iptables", "-w", "-S", "SCANNERS-BLOCK")
+		state, err := service.LoadFirewall()
 		if err != nil {
 			return err
+		}
+		rules := ""
+		if state.Backend == "iptables" {
+			rules, err = commands.RunOutput("iptables", "-w", "-S", "SCANNERS-BLOCK")
+			if err != nil {
+				return err
+			}
 		}
 		firewall := service.NewIptablesService(logger.Global().Logger, commands, strings.Contains(rules, "-j LOG"))
 		if err := firewall.ChangeException(args[0], entry); err != nil {

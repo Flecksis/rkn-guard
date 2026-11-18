@@ -80,10 +80,11 @@ WantedBy=timers.target
     delaycompress
     missingok
     notifempty
+    su root adm
     create 0640 syslog adm
     sharedscripts
     postrotate
-        /usr/lib/rsyslog/rsyslog-rotate
+        systemctl kill --kill-who=main --signal=HUP rsyslog.service
     endscript
 }
 

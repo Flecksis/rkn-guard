@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -38,7 +39,7 @@ func (s *LoggingService) CheckHealth() error {
 }
 
 // Пишем в журнал ядра без SRC: проверка не увеличивает счётчики атак.
-// Правила firewall при этом не меняются.
+// В native-режиме при необходимости проверяем настоящее сообщение firewall.
 func (s *LoggingService) verifyDelivery(timeout time.Duration) error {
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
@@ -59,6 +60,7 @@ func (s *LoggingService) verifyDelivery(timeout time.Duration) error {
 		return err
 	}
 	deadline := time.Now().Add(timeout)
+	probed := false
 	for {
 		ready := true
 		for index, name := range []string{IPv4LogPath, IPv6LogPath} {
@@ -73,10 +75,58 @@ func (s *LoggingService) verifyDelivery(timeout time.Duration) error {
 			return nil
 		}
 		if time.Now().After(deadline) {
+			if !probed && s.root == "" {
+				state, err := LoadFirewall()
+				if err == nil && (state.Backend == "nftables" || state.Backend == "firewalld") {
+					if err := probeKernelLogging(token); err != nil {
+						return err
+					}
+					probed = true
+					deadline = time.Now().Add(timeout)
+					continue
+				}
+			}
 			return fmt.Errorf("события ANTISCAN не дошли в оба журнала; проверьте приём сообщений ядра и подключение %s", RsyslogConfigPath)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// imklog может отбрасывать пользовательские записи в /dev/kmsg.
+func probeKernelLogging(token string) (result error) {
+	table := "rkn_probe_" + strings.TrimPrefix(token, "rkn-guard-check-")
+	script := fmt.Sprintf("add table inet %s\nadd chain inet %s output { type filter hook output priority -301; policy accept; }\n", table, table)
+	var sockets []*net.UDPConn
+	defer func() {
+		for _, socket := range sockets {
+			socket.Close()
+		}
+	}()
+	for i, host := range []string{"127.0.0.1", "::1"} {
+		socket, err := net.ListenUDP([]string{"udp4", "udp6"}[i], &net.UDPAddr{IP: net.ParseIP(host)})
+		if err != nil {
+			return err
+		}
+		sockets = append(sockets, socket)
+		port := socket.LocalAddr().(*net.UDPAddr).Port
+		script += fmt.Sprintf("add rule inet %s output %s daddr %s udp sport %d udp dport %d log prefix \"ANTISCAN-v%d: %s \"\n", table, []string{"ip", "ip6"}[i], host, port, port, []int{4, 6}[i], token)
+	}
+	command := exec.Command("nft", "-f", "-")
+	command.Stdin = strings.NewReader(script)
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("проверка журнала ядра: %s: %w", output, err)
+	}
+	defer func() {
+		if output, err := exec.Command("nft", "delete", "table", "inet", table).CombinedOutput(); err != nil {
+			result = fmt.Errorf("удаление проверочной таблицы %s: %s: %w", table, output, err)
+		}
+	}()
+	for _, socket := range sockets {
+		if _, err := socket.WriteToUDP([]byte(token), socket.LocalAddr().(*net.UDPAddr)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func logContains(path, token string) (bool, error) {

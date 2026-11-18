@@ -159,6 +159,13 @@ func (s *IptablesService) ChangeException(action string, entry Exception) error 
 		return atomicWriteFile(ExceptionsPath, data, 0600)
 	}
 	apply := func(entries []Exception) error {
+		state, err := LoadFirewall()
+		if err != nil {
+			return err
+		}
+		if state.Backend != "iptables" {
+			return ApplyNFTState(s.cmdSvc, state, false)
+		}
 		for _, version := range []IPVersion{IPv4, IPv6} {
 			if err := s.syncExceptions(entries, version); err != nil {
 				return err

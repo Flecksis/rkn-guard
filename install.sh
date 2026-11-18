@@ -54,6 +54,7 @@ SCHEDULE_LOCK="/run/rkn-guard-schedule.lock"
 SCHEDULE_TIMER="rkn-guard-update.timer"
 SCHEDULE_SERVICE="rkn-guard-update.service"
 SOURCES_FILE="/var/lib/rkn-guard/sources.json"
+FIREWALL_CONFIG_FILE="/etc/rkn-guard-firewall.json"
 
 refresh_version_status() {
     local info old_version payload current latest newest
@@ -153,6 +154,11 @@ uninstall_process() {
     trap 'exit 0' INT
 
     [[ "$confirm" != "y" ]] && return
+
+    if [[ -e "$FIREWALL_CONFIG_FILE" ]] && ! command -v rkn-guard >/dev/null 2>&1; then
+        printf 'Бинарник rkn-guard не найден. Восстановите его для удаления правил выбранного firewall.\n' >&2
+        return 1
+    fi
 
     remove_update_schedule || return 1
 
@@ -603,28 +609,57 @@ update_application() {
     sleep 2
 }
 
+choose_firewall() {
+    local choice
+    echo 'Выберите firewall:'
+    echo ' 1. Автоматически (текущий инструмент, на чистом сервере — nftables)'
+    echo ' 2. iptables + ipset (включая UFW)'
+    echo ' 3. nftables'
+    echo ' 4. firewalld (с nftables backend)'
+    while true; do
+        read_cancellable_input -p 'Ваш выбор [1]: ' choice || return $?
+        case "$choice" in
+            ''|1) FIREWALL_CHOICE=auto; return ;;
+            2) FIREWALL_CHOICE=iptables; return ;;
+            3) FIREWALL_CHOICE=nftables; return ;;
+            4) FIREWALL_CHOICE=firewalld; return ;;
+            *) echo 'Выберите от 1 до 4.' ;;
+        esac
+    done
+}
+
 install_process() {
     trap 'exit 1' INT
     clear
     echo -e "${CYAN}🚀 УСТАНОВКА RKN-GUARD${NC}"
-    check_firewall_safety || return 1
+    choose_firewall || return 1
 
     echo -e "\n${BLUE}[INFO] Установка...${NC}"
-    apt-get update || { printf 'Не удалось обновить пакеты. Установка не завершена.\n' >&2; return 1; }
-    apt-get install -y curl wget rsyslog logrotate ipset ufw grep sed coreutils whois util-linux tzdata python3 || {
+    if command -v apt-get >/dev/null; then
+        apt-get update || return 1
+        apt-get install -y curl wget rsyslog logrotate grep sed coreutils whois util-linux tzdata python3 || return 1
+    elif command -v dnf >/dev/null; then
+        dnf install -y curl wget rsyslog logrotate grep sed coreutils whois util-linux tzdata python3 || return 1
+    else
         printf 'Не удалось установить зависимости. Установка не завершена, повторите после восстановления доступа к репозиторию.\n' >&2
         return 1
-    }
+    fi
     command -v rsyslogd >/dev/null || { printf 'Не найден rsyslogd. Установка не завершена.\n' >&2; return 1; }
     systemctl enable --now rsyslog && systemctl is-active --quiet rsyslog || return 1
 
     install_application || return 1
 
+    FIREWALL_CHOICE=$(rkn-guard firewall-select "$FIREWALL_CHOICE") || return 1
+    echo "Выбран firewall: $FIREWALL_CHOICE"
+    if [[ "$FIREWALL_CHOICE" == iptables ]]; then
+        check_firewall_safety || return 1
+    fi
+
     install_menu_command || return 1
 
     echo -e "\n${BLUE}[INFO] Настройка правил...${NC}"
     base_source_args -u || return 1
-    rkn-guard full "${SOURCE_ARGS[@]}" --enable-logging \
+    rkn-guard full "${SOURCE_ARGS[@]}" --enable-logging --firewall "$FIREWALL_CHOICE" \
         --managed-lists --sources-file "$SOURCES_FILE"
 
     if [ $? -ne 0 ]; then
@@ -665,9 +700,16 @@ show_attack_stats() {
 
 view_log() {
     local file=$1
-    echo -e "\n${YELLOW}=== LIVE LOG (Ctrl+C для возврата) ===${NC}"
+    local family=v4
+    [[ "$file" == *ipv6.log ]] && family=v6
+    printf '\n'
     trap ':' INT
-    tail -f "$file"
+    if rkn-guard logs --help >/dev/null 2>&1; then
+        rkn-guard logs "$family"
+    else
+        # Старый бинарник ещё не умеет таблицу.
+        tail -F "$file"
+    fi
     trap 'exit 0' INT
 }
 
@@ -675,7 +717,9 @@ show_subnet_summary() {
     local LC_ALL=C.UTF-8
     local count=$1 updated note plain padding
     # Файл заменяется после успешного применения и сохранения обоих наборов.
-    updated=$(TZ=Europe/Moscow date -r "${IPSET_CONFIG_FILE:-/etc/ipset.conf}" '+%d.%m.%Y %H:%M' 2>/dev/null) || updated=''
+    local data_file=${IPSET_CONFIG_FILE:-/etc/ipset.conf}
+    if [[ "${FW_MODE:-}" == nftables || "${FW_MODE:-}" == firewalld ]]; then data_file=/etc/rkn-guard-firewall.json; fi
+    updated=$(TZ=Europe/Moscow date -r "$data_file" '+%d.%m.%Y %H:%M' 2>/dev/null) || updated=''
     note='(дата обновления неизвестна)'
     [[ -n "$updated" ]] && note="(обновлены $updated МСК)"
     plain="  📊 Подсетей: $count $note"
@@ -684,15 +728,47 @@ show_subnet_summary() {
     printf "${CYAN}║${NC}  📊 Подсетей: ${GREEN}%s${NC} ${DIM}%s${NC}%*s${CYAN}║${NC}\n" "$count" "$note" "$padding" ''
 }
 
+refresh_firewall_status() {
+    FW_MODE=iptables
+    FW_INFO=''
+    FW_LABEL='iptables + ipset'
+    if [[ -e "$FIREWALL_CONFIG_FILE" ]]; then
+        FW_MODE=unknown
+        FW_LABEL='ошибка чтения настроек'
+        if FW_INFO=$(rkn-guard firewall-status 2>/dev/null); then
+            FW_MODE=$(printf '%s\n' "$FW_INFO" | head -n 1)
+            case "$FW_MODE" in
+                iptables) FW_LABEL='iptables + ipset' ;;
+                nftables) FW_LABEL='nftables' ;;
+                firewalld) FW_LABEL='firewalld + nftables' ;;
+                *) FW_MODE=unknown ;;
+            esac
+        fi
+    fi
+    if [[ "$FW_MODE" == iptables ]] && command -v ufw >/dev/null 2>&1; then
+        if LC_ALL=C ufw status 2>/dev/null | grep -q '^Status: active'; then FW_LABEL='UFW (iptables + ipset)'; fi
+    fi
+}
+
 show_menu() {
     trap 'exit 0' INT
     while true; do
         clear
         refresh_version_status
+        refresh_firewall_status
         IPSET_CNT=$(ipset list SCANNERS-BLOCK-V4 2>/dev/null | grep "Number of entries" | awk '{print $4}')
         [[ -z "$IPSET_CNT" ]] && IPSET_CNT="0"
         PKTS_CNT=$(iptables -vnL SCANNERS-BLOCK 2>/dev/null | grep "LOG" | awk '{print $1}')
         [[ -z "$PKTS_CNT" ]] && PKTS_CNT="0"
+        if [[ -e "$FIREWALL_CONFIG_FILE" ]]; then
+            if [[ "$FW_MODE" == nftables || "$FW_MODE" == firewalld ]]; then
+                IPSET_CNT=$(printf '%s\n' "$FW_INFO" | sed -n '2p')
+                PKTS_CNT=$(nft -j list chain inet rkn_guard input 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(e["counter"]["packets"] for x in d["nftables"] for e in x.get("rule",{}).get("expr",[]) if "counter" in e))' 2>/dev/null) || PKTS_CNT='н/д'
+            elif [[ "$FW_MODE" == unknown ]]; then
+                IPSET_CNT='н/д'
+                PKTS_CNT='н/д'
+            fi
+        fi
 
         echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${NC}"
         echo -e "${CYAN}║               💜 RKN-GUARD MANAGER 💜                ║${NC}"
@@ -702,6 +778,7 @@ show_menu() {
         printf "${CYAN}║${NC}  🔥 Атак отбито:    ${RED}%-33s${NC}${CYAN}║${NC}\n" "$PKTS_CNT"
         echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
         echo -e "  ${DIM}└─${NC} ${BOLD}${GREEN}◆ ${CURRENT_VERSION}${NC} ${DIM}·${NC} ${YELLOW}${CURRENT_BRANCH}${NC} ${DIM}· ${UPDATE_STATUS}${NC}"
+        printf '  Firewall: %s\n' "$FW_LABEL"
         echo ""
         echo -e " ${GREEN}1.${NC} 📈 Топ атак (CSV)"
         echo -e " ${GREEN}2.${NC} 🕵 Логи IPv4 (Live)"

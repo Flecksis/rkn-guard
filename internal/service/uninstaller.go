@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,6 +35,26 @@ func NewUninstallerService(logger zerolog.Logger, cmdSvc *CommandService) *Unins
 
 // Uninstall удаляет файлы rkn-guard и восстанавливает настройки firewall.
 func (s *UninstallerService) Uninstall(removeLogs bool) error {
+	state, err := LoadFirewall()
+	if err != nil {
+		return err
+	}
+	if state.Backend != "iptables" {
+		if err := s.RemoveLegacyFirewall(); err != nil {
+			return err
+		}
+		if err := RemoveNFT(s.cmdSvc); err != nil {
+			return err
+		}
+		s.stopAndDisableServices()
+		s.removeArtifacts(removeLogs)
+		return errors.Join(s.reloadSystemdDaemon(), s.reloadRsyslog())
+	}
+	if _, err := os.Stat(FirewallUnitPath); err == nil || state.CleanupNFT {
+		if err := RemoveNFT(s.cmdSvc); err != nil {
+			return err
+		}
+	}
 	s.logger.Info().Msg("=== Uninstall rkn-guard ===")
 	s.logger.Info().Msg("rkn-guard does not modify Linux routing tables (ip rule/ip route), skipping routing rollback")
 
@@ -68,6 +89,7 @@ func (s *UninstallerService) stopAndDisableServices() {
 	}
 
 	services := []string{
+		"rkn-guard-firewall.service",
 		"rkn-guard-update.timer",
 		"rkn-guard-update.service",
 		"antiscan-aggregate.timer",
@@ -205,6 +227,8 @@ func (s *UninstallerService) cleanupIPSet() {
 
 func (s *UninstallerService) removeArtifacts(removeLogs bool) {
 	paths := []string{
+		FirewallPath,
+		FirewallUnitPath,
 		"/etc/systemd/system/rkn-guard-update.timer",
 		"/etc/systemd/system/rkn-guard-update.service",
 		"/etc/rkn-guard-update.conf",
@@ -243,6 +267,68 @@ func (s *UninstallerService) removeArtifacts(removeLogs bool) {
 			s.logger.Warn().Err(err).Str("path", logFile).Msg("Failed to remove log file")
 		}
 	}
+}
+
+// Убираем старую защиту только после включения новой.
+func (s *UninstallerService) RemoveLegacyFirewall() error {
+	data, readErr := os.ReadFile(IpsetConfigPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
+	}
+	if !strings.Contains(string(data), ipsetV4Name) && !strings.Contains(string(data), ipsetV6Name) && !s.iptablesCmd.ChainExists(IPv4, TableFilter, chainName) && !s.iptablesCmd.ChainExists(IPv6, TableFilter, chainName) {
+		return nil
+	}
+	for _, name := range []string{"antiscan-move-rules.service", "antiscan-ipset-restore.service"} {
+		if s.cmdSvc.RunQuiet("systemctl", "cat", name) == nil {
+			if err := s.cmdSvc.Run("systemctl", "disable", "--now", name); err != nil {
+				return err
+			}
+		}
+	}
+	s.cleanupIPTablesRuntime()
+	if err := s.cleanupUFWBeforeRules(); err != nil {
+		return err
+	}
+	for _, version := range []IPVersion{IPv4, IPv6} {
+		if s.iptablesCmd.ChainExists(version, TableFilter, chainName) {
+			return fmt.Errorf("не удалось удалить старую цепочку %s", version)
+		}
+	}
+	for _, name := range []string{ipsetV4Name, ipsetV6Name} {
+		if s.ipsetCmd.Exists(name) {
+			if err := s.ipsetCmd.Destroy(name); err != nil {
+				return err
+			}
+		}
+	}
+	if readErr == nil {
+		var keep []string
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) > 1 && (fields[1] == ipsetV4Name || fields[1] == ipsetV6Name) {
+				continue
+			}
+			if strings.TrimSpace(line) != "" {
+				keep = append(keep, line)
+			}
+		}
+		if len(keep) == 0 {
+			if err := removeFileIfExists(IpsetConfigPath); err != nil {
+				return err
+			}
+		} else if err := atomicWriteFile(IpsetConfigPath, []byte(strings.Join(keep, "\n")+"\n"), 0600); err != nil {
+			return err
+		}
+	}
+	for _, path := range []string{IpsetRestoreServicePath, MoveRulesServicePath} {
+		if err := removeFileIfExists(path); err != nil {
+			return err
+		}
+	}
+	if err := s.persistFirewallState(); err != nil {
+		return err
+	}
+	return s.cmdSvc.DaemonReload()
 }
 
 func (s *UninstallerService) reloadSystemdDaemon() error {

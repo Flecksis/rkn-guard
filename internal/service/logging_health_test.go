@@ -34,6 +34,12 @@ func TestDeliveryFailurePreservesLogs(t *testing.T) {
 	}
 }
 
+func TestCollectorShebangUsesUnixNewline(t *testing.T) {
+	if !strings.HasPrefix(AggregateLogsScriptTemplate, "#!/usr/bin/python3\n") || strings.Contains(AggregateLogsScriptTemplate, "\r\n") {
+		t.Fatal("неверные переводы строк встроенного скрипта")
+	}
+}
+
 func TestLoggingHealth(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux commands")

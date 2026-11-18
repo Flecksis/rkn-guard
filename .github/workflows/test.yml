@@ -23,6 +23,7 @@ jobs:
       - run: python3 tests/update_schedule.py
       - run: python3 tests/extra_lists_menu.py
       - run: python3 tests/attack_stats.py
+      - run: RKN_TEST_BINARY="$RUNNER_TEMP/rkn-guard" python3 tests/live_logs.py
       - run: sudo env RKN_TEST_BINARY="$RUNNER_TEMP/rkn-guard" python3 tests/source_failures_cli.py
       - run: sudo env GITHUB_ACTIONS=true RUNNER_OS=Linux RKN_TEST_BINARY="$RUNNER_TEMP/rkn-guard" bash tests/integration/update_schedule_systemd.sh
       - run: sudo env GITHUB_ACTIONS=true RUNNER_OS=Linux RKN_TEST_BINARY="$RUNNER_TEMP/rkn-guard" python3 tests/integration/extra_lists.py
@@ -37,3 +38,16 @@ jobs:
         run: |
           sudo apt-get install -y ufw
           sudo unshare --mount --net env RKN_TEST_BINARY="$RUNNER_TEMP/rkn-guard" python3 tests/integration/exceptions.py
+      - name: Проверить nftables и переустановку
+        run: |
+          sudo apt-get install -y nftables
+          sudo unshare --mount --net env RKN_TEST_BINARY="$RUNNER_TEMP/rkn-guard" python3 tests/integration/nftables.py
+      - name: Проверить совместимость с firewalld
+        run: |
+          sudo apt-get install -y python3-dbus python3-gi
+          mkdir -p "$RUNNER_TEMP/firewalld-test"
+          cd "$RUNNER_TEMP/firewalld-test"
+          apt-get download firewalld python3-firewall python3-nftables
+          for pkg in *.deb; do dpkg-deb -x "$pkg" root; done
+          cd "$GITHUB_WORKSPACE"
+          sudo unshare --mount --net env RKN_TEST_BINARY="$RUNNER_TEMP/rkn-guard" RKN_FIREWALLD_ROOT="$RUNNER_TEMP/firewalld-test/root" python3 tests/integration/nftables.py

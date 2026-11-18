@@ -22,6 +22,7 @@ var (
 	logLevel      string
 	version       = "dev" // Версия будет устанавливаться при сборке через -ldflags
 	branch        = "unknown"
+	firewallMode  = "auto"
 )
 
 func main() {
@@ -31,8 +32,8 @@ func main() {
 
 	rootCmd := &cobra.Command{
 		Use:     "rkn-guard",
-		Short:   "Инструмент для управления блокировкой сканеров через iptables и ipset",
-		Long:    `Утилита для скачивания списков подсетей сканеров и настройки правил iptables/ipset для их блокировки.`,
+		Short:   "Инструмент для блокировки подсетей сканеров",
+		Long:    `Скачивает списки подсетей и применяет блокировки через выбранный firewall.`,
 		Version: version,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			// Если указан уровень сообщений, применяем его.
@@ -49,17 +50,18 @@ func main() {
 	fullCmd := &cobra.Command{
 		Use:   "full",
 		Short: "Выполнить полную установку (скачать, настроить и применить)",
-		Long:  `Скачивает списки подсетей, настраивает ipset и iptables, сохраняет правила для автозагрузки.`,
+		Long:  `Скачивает списки подсетей, настраивает выбранный firewall и восстановление правил при загрузке.`,
 		Run:   runFull,
 	}
 	fullCmd.Flags().StringSliceVarP(&urls, "urls", "u", []string{}, "Список URL для скачивания подсетей")
 	fullCmd.Flags().BoolVarP(&enableLogging, "enable-logging", "l", false, "Включить логирование заблокированных подключений")
 	fullCmd.Flags().BoolVar(&managedLists, "managed-lists", false, "Учесть дополнительные списки и сохранённые копии источников")
+	fullCmd.Flags().StringVar(&firewallMode, "firewall", "auto", "Firewall: auto, iptables, nftables, firewalld")
 
 	updateCmd := &cobra.Command{
 		Use:   "update",
 		Short: "Обновить списки подсетей без сброса счётчиков атак",
-		Long:  `Скачивает и обновляет ipset-наборы, не изменяя цепочки iptables. Счётчики заблокированных атак сохраняются.`,
+		Long:  `Обновляет наборы выбранного firewall без пересоздания правил и сброса счётчиков.`,
 		Run:   runUpdate,
 	}
 	updateCmd.Flags().StringSliceVarP(&urls, "urls", "u", []string{}, "Список URL для скачивания подсетей")
@@ -75,6 +77,21 @@ func main() {
 	uninstallCmd.Flags().BoolVar(&removeLogs, "remove-logs", false, "Удалить логи rkn-guard из /var/log")
 
 	rootCmd.AddCommand(fullCmd)
+	rootCmd.AddCommand(newFirewallCommands()...)
+	rootCmd.AddCommand(&cobra.Command{
+		Use: "logs <v4|v6>", Short: "Показать новые события в таблице", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := service.IPv4LogPath
+			if args[0] == "v6" {
+				path = service.IPv6LogPath
+			} else if args[0] != "v4" {
+				return fmt.Errorf("укажите v4 или v6")
+			}
+			process := exec.Command("python3", "-u", "-c", service.AggregateLogsScriptTemplate, "--live", path)
+			process.Stdout, process.Stderr = os.Stdout, os.Stderr
+			return process.Run()
+		},
+	})
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(uninstallCmd)
 	rootCmd.AddCommand(newSourcesCommand())
@@ -159,6 +176,27 @@ func runFull(cmd *cobra.Command, args []string) {
 		log.Fatal().Err(err).Msg("Failed to download subnets")
 	}
 
+	mode, err := service.SelectFirewall(firewallMode, cmdSvc)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Не удалось выбрать firewall")
+	}
+	if err := service.CheckFirewallMode(mode, cmdSvc); err != nil {
+		log.Fatal().Err(err).Msg("Конфликт firewall")
+	}
+	log.Info().Str("firewall", mode).Msg("Выбран firewall")
+	if mode != "iptables" {
+		if err := installNFT(cmdSvc, installer, mode, networks); err != nil {
+			log.Fatal().Err(err).Msg("Установка firewall не завершена")
+		}
+		if enableLogging {
+			if err := loggingSvc.Refresh(); err != nil {
+				log.Fatal().Err(err).Msg("Статистика не настроена")
+			}
+		}
+		log.Info().Msg("Полная установка успешно завершена")
+		return
+	}
+
 	// Предупреждаем о необходимости разрешить SSH в UFW.
 	if cmdSvc.CommandExists("ufw") {
 		output, err := cmdSvc.RunOutput("ufw", "status")
@@ -188,7 +226,7 @@ func runFull(cmd *cobra.Command, args []string) {
 	}
 
 	// Готовим, заменяем и сохраняем наборы до настройки правил firewall.
-	if err := applySourceNetworks(ipsetSvc, networks); err != nil {
+	if err := applyLegacySourceNetworks(ipsetSvc, networks); err != nil {
 		log.Fatal().Err(err).Msg("Failed to replace ipset")
 	}
 
@@ -219,6 +257,9 @@ func runFull(cmd *cobra.Command, args []string) {
 	}
 	if restoreErr != nil {
 		log.Fatal().Err(restoreErr).Msg("Установка не завершена: восстановление ipset при загрузке не настроено. Применённые правила не удалены; повторите установку после устранения ошибки")
+	}
+	if err := finishLegacyInstall(cmdSvc); err != nil {
+		log.Fatal().Err(err).Msg("Не удалось сохранить режим firewall")
 	}
 	log.Info().Msg("Полная установка успешно завершена")
 }

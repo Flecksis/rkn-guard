@@ -154,7 +154,7 @@ def collect(log_dir, state_path, csv_path, cache_path, lookup=True, now=None):
                         break  # Запись этой строки ещё может продолжаться.
                     offset += len(raw)
                     line = raw.decode("utf-8", errors="replace")
-                    if f"ANTISCAN-{family}:" not in line:
+                    if f"ANTISCAN-{family}:" not in line or re.search(r'ANTISCAN-v[46]: rkn-guard-check-[0-9a-f]{32}\b', line):
                         continue
                     match = re.search(r"(?:^|\s)SRC=([^\s]+)(?=\s|$)", line)
                     if not match:
@@ -264,9 +264,72 @@ def display(rows):
     border("└", "┴", "┘")
 
 
+def live_event(line, now=None):
+    now = now or dt.datetime.now().astimezone()
+    match = re.search(r"ANTISCAN-(v[46]):", line)
+    if not match:
+        return None
+    fields = dict(re.findall(r"\b(SRC|PROTO|DPT|IN)=([^\s]*)", line))
+    try:
+        ip = address(match[1], fields.get('SRC', ''))
+    except ValueError:
+        return None
+    stamp = re.match(r"^(\S+|[A-Z][a-z]{2}\s+\d+\s+\d{2}:\d{2}:\d{2})", line)
+    legacy = re.match(r"^[A-Z][a-z]{2}\s+\d+\s+\d{2}:\d{2}:\d{2}", line)
+    value = legacy[0] if legacy else stamp[0] if stamp else ''
+    parsed = timestamp(value, now)
+    when = display_time(parsed.isoformat()) if parsed else '—'
+    return [when, ip, clean(fields.get('PROTO') or 'н/д'),
+            clean(fields.get('DPT') or '—'), clean(fields.get('IN') or 'н/д')]
+
+
+def live_display(path):
+    color = sys.stdout.isatty() and 'NO_COLOR' not in os.environ and os.environ.get('TERM') != 'dumb'
+    def paint(value, style):
+        return f'\033[{style}m{value}\033[0m' if color else value
+    family = 'IPv6' if path.name.endswith('ipv6.log') else 'IPv4'
+    widths = [19, 39 if family == 'IPv6' else 15, 8, 5, 15]
+    def border(left, middle, right):
+        print(paint(left + middle.join('─' * (n + 2) for n in widths) + right, '90'), flush=True)
+    def row(values, heading=False):
+        cells = []
+        for i, value in enumerate(values):
+            value = clean(value)
+            if len(value) > widths[i]: value = value[:widths[i]-1] + '…'
+            style = '1;36' if heading else '1;37' if i == 1 else '1;33' if i == 3 else '90' if value in ('н/д', '—') else '0'
+            cells.append(' ' + paint(value.ljust(widths[i]), style) + ' ')
+        print(paint('│', '90') + paint('│', '90').join(cells) + paint('│', '90'), flush=True)
+    print(paint(f'🛡️ LIVE ЛОГ · {family}', '1;36'))
+    print('Последние 15 строк и новые события · Ctrl+C — назад\n', flush=True)
+    border('┌', '┬', '┐')
+    row(['ВРЕМЯ (МСК)', 'IP ИСТОЧНИКА', 'ПРОТОКОЛ', 'ПОРТ', 'ИНТЕРФЕЙС'], True)
+    border('├', '┼', '┤')
+    process = None
+    try:
+        process = subprocess.Popen(['tail', '-n', '15', '-F', '--sleep-interval=0.2', '--max-unchanged-stats=1', '--', str(path)], stdout=subprocess.PIPE,
+                                   text=True, encoding='utf-8', errors='replace')
+        for line in process.stdout:
+            if re.search(r'ANTISCAN-v[46]: rkn-guard-check-[0-9a-f]{32}\b', line):
+                continue
+            event = live_event(line)
+            if event: row(event)
+            elif line.strip(): print(paint('Не распознано: ' + clean(line)[:240], '90'), flush=True)
+        return process.wait()
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        if process is not None:
+            if process.poll() is None: process.terminate()
+            try: process.wait(timeout=3)
+            except subprocess.TimeoutExpired: process.kill(); process.wait()
+            process.stdout.close()
+        border('└', '┴', '┘')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--display", action="store_true")
+    parser.add_argument("--live", type=Path)
     parser.add_argument("--no-whois", action="store_true")
     parser.add_argument("--log-dir", type=Path, default=Path("/var/log"))
     parser.add_argument("--state", type=Path, default=Path("/var/lib/rkn-guard/attack-stats.json"))
@@ -274,6 +337,8 @@ def main():
     parser.add_argument("--cache", type=Path, default=Path("/tmp/antiscan-whois-cache.txt"))
     parser.add_argument("--lock", type=Path, default=Path("/run/rkn-guard-stats.lock"))
     args = parser.parse_args()
+    if args.live:
+        return live_display(args.live)
     import fcntl
     try:
         with args.lock.open("a") as lock:
