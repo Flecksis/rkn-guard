@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -142,17 +143,70 @@ exit 0
 }
 
 func TestLoggingConfigBackup(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "rsyslog.conf")
+	s := &LoggingService{root: t.TempDir()}
+	path := s.path("rsyslog.conf")
 	if err := os.WriteFile(path, []byte("custom"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		if err := writeLoggingConfig(path, []byte("fixed")); err != nil {
+		if err := s.writeLoggingConfig(path, []byte("fixed")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	data, err := os.ReadFile(path + ".before-repair")
+	data, err := os.ReadFile(s.path("/var/backups/rkn-guard/rsyslog.conf.before-repair"))
 	if err != nil || string(data) != "custom" {
 		t.Fatal(string(data), err)
 	}
+}
+
+func TestLogrotateLegacyBackup(t *testing.T) {
+	s := &LoggingService{root: t.TempDir()}
+	path := s.path(LogrotateConfigPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(s.path("test.log") + " {\n    missingok\n}\n")
+	if err := os.WriteFile(s.path("test.log"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{path, path + ".before-repair"} {
+		if err := os.WriteFile(name, data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := s.path("logrotate.conf")
+	if err := os.WriteFile(config, []byte("include "+filepath.Dir(path)+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	check := func() ([]byte, error) {
+		cmd := exec.Command("logrotate", "-d", "-s", "/dev/null", config)
+		cmd.Env = append(os.Environ(), "LC_ALL=C")
+		return cmd.CombinedOutput()
+	}
+	_, lookupErr := exec.LookPath("logrotate")
+	if lookupErr == nil {
+		if out, err := check(); err == nil || !strings.Contains(string(out), "duplicate log entry") {
+			t.Fatalf("expected duplicate log entry: %v: %s", err, out)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.writeLoggingConfig(path, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(path + ".before-repair"); !os.IsNotExist(err) {
+		t.Fatalf("legacy backup still present: %v", err)
+	}
+	saved, err := os.ReadFile(s.path("/var/backups/rkn-guard/iptables-scanners.before-repair"))
+	if err != nil || string(saved) != string(data) {
+		t.Fatalf("backup: %q, %v", saved, err)
+	}
+	t.Run("logrotate", func(t *testing.T) {
+		if lookupErr != nil {
+			t.Skip("logrotate unavailable")
+		}
+		if out, err := check(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+	})
 }

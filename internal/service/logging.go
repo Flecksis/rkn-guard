@@ -1,6 +1,8 @@
 package service
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -148,7 +150,7 @@ func (s *LoggingService) setupRsyslog() error {
 	if err := os.MkdirAll(s.path("/etc/rsyslog.d"), 0755); err != nil {
 		return err
 	}
-	if err := writeLoggingConfig(s.path(RsyslogConfigPath), []byte(RsyslogConfigTemplate)); err != nil {
+	if err := s.writeLoggingConfig(s.path(RsyslogConfigPath), []byte(RsyslogConfigTemplate)); err != nil {
 		return err
 	}
 	s.logger.Info().Str("path", s.path(RsyslogConfigPath)).Msg("Конфиг rsyslog создан")
@@ -193,7 +195,7 @@ func (s *LoggingService) setupLogrotate() error {
 	if err := os.MkdirAll(filepath.Dir(s.path(LogrotateConfigPath)), 0755); err != nil {
 		return err
 	}
-	if err := writeLoggingConfig(s.path(LogrotateConfigPath), []byte(config)); err != nil {
+	if err := s.writeLoggingConfig(s.path(LogrotateConfigPath), []byte(config)); err != nil {
 		return err
 	}
 
@@ -293,29 +295,48 @@ func (s *LoggingService) ensureDependencies() error {
 	return nil
 }
 
-func writeLoggingConfig(path string, data []byte) error {
+func (s *LoggingService) writeLoggingConfig(path string, data []byte) error {
+	backup := filepath.Join(s.path("/var/backups/rkn-guard"), filepath.Base(path)+".before-repair")
+	legacy := path + ".before-repair"
+	if previous, err := os.ReadFile(legacy); err == nil {
+		if err := saveLoggingBackup(backup, previous, true); err != nil {
+			return err
+		}
+		if err := os.Remove(legacy); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
 	old, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if string(old) == string(data) {
+	if err == nil && bytes.Equal(old, data) {
 		return nil
 	}
 	if err == nil {
-		backup, err := os.OpenFile(path+".before-repair", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if err != nil && !os.IsExist(err) {
+		if err := saveLoggingBackup(backup, old, false); err != nil {
 			return err
-		}
-		if err == nil {
-			_, writeErr := backup.Write(old)
-			closeErr := backup.Close()
-			if writeErr != nil {
-				return writeErr
-			}
-			if closeErr != nil {
-				return closeErr
-			}
 		}
 	}
 	return atomicWriteFile(path, data, 0644)
+}
+
+func saveLoggingBackup(path string, data []byte, migrating bool) error {
+	existing, err := os.ReadFile(path)
+	if err == nil {
+		if !migrating || bytes.Equal(existing, data) {
+			return nil
+		}
+		// После отката версии рядом с конфигом могла появиться другая копия.
+		path = fmt.Sprintf("%s.%x", path, sha256.Sum256(data))
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	return atomicWriteFile(path, data, 0600)
 }
