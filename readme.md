@@ -1,6 +1,7 @@
 <h1 align="center">rkn-guard</h1>
 <p align="center">Фильтрация входящего трафика по спискам IPv4 и IPv6 для Linux.</p>
-<p align="center">Помогает значительно снизить шансы на блокировку IPv4 и IPv6 vps/vds или homelab установками TSPY</p>
+<p align="center">Помогает значительно снизить шансы на блокировку IPv4 и IPv6 vps/vds или homelab установками TSPY
+совместима с marzban remnawave 3xUI amnezia panel и др.</p>
 <p align="center"><a href="#установка">Установка</a> · <a href="#управление">Управление</a> · <a href="#справка">Справка</a></p>
 
 <p align="center"><img src="https://github.com/user-attachments/assets/40ab4712-c541-415c-8121-005717a3d189" width="520" alt="Терминальное меню rkn-guard"></p>
