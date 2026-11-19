@@ -1,5 +1,8 @@
 #!/bin/bash
 set -u
+if [[ ":$PATH:" != *:/usr/local/bin:* ]]; then
+    export PATH="$PATH:/usr/local/bin"
+fi
 
 # --- ЦВЕТА ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
@@ -675,6 +678,7 @@ install_process() {
     offer_install_schedule || return 1
 
     echo -e "\n${GREEN}✅ Установка завершена!${NC}"
+    printf 'Открыть меню: %s\n' "$MENU_COMMAND"
     sleep 2
 }
 

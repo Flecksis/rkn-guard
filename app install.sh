@@ -177,16 +177,15 @@ install_binary() {
 
 # Проверка установки
 verify_installation() {
-    if command -v ${BINARY_NAME} &> /dev/null; then
-        local version=$(${BINARY_NAME} --version 2>&1 | head -n1)
-        log_info "✓ ${BINARY_NAME} успешно установлен"
-        log_info "Версия: ${version}"
-        log_info "Путь: $(which ${BINARY_NAME})"
-        return 0
-    else
-        log_error "Установка не удалась"
+    local install_path="${INSTALL_DIR}/${BINARY_NAME}"
+    local version
+    if ! version=$("$install_path" --version); then
+        log_error "Не удалось выполнить $install_path --version"
         return 1
     fi
+    log_info "✓ ${BINARY_NAME} успешно установлен"
+    log_info "Версия: ${version}"
+    log_info "Путь: ${install_path}"
 }
 
 # Вывод информации об использовании
@@ -198,7 +197,7 @@ show_usage() {
     echo "  https://github.com/shadow-netlab/traffic-guard-lists/tree/main" >&2
     log_info "Для получения полной справки:"
     echo "" >&2
-    echo "  ${BINARY_NAME} --help" >&2
+    echo "  ${INSTALL_DIR}/${BINARY_NAME} --help" >&2
     echo "" >&2
 }
 
