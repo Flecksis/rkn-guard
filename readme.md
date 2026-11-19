@@ -3,7 +3,7 @@
 <p align="center">Помогает значительно снизить шансы на блокировку IPv4 и IPv6 vps/vds или homelab установками TSPY</p>
 <p align="center"><a href="#установка">Установка</a> · <a href="#управление">Управление</a> · <a href="#справка">Справка</a></p>
 
-<p align="center"><img src="https://github.com/user-attachments/assets/e7db7b4c-76a7-4fa6-a93e-5c6df677e3f6" width="520" alt="Терминальное меню rkn-guard"></p>
+<p align="center"><img src="https://github.com/user-attachments/assets/40ab4712-c541-415c-8121-005717a3d189" width="520" alt="Терминальное меню rkn-guard"></p>
 
 > **Помочь с оплатой серверов и разработкой, и на корм автору**
 >
