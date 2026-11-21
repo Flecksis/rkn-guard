@@ -18,6 +18,10 @@ jobs:
         env:
           BUILD_BRANCH: ${{ github.head_ref || github.ref_name }}
       - run: for file in install.sh tests/*.sh tests/integration/*.sh; do bash -n "$file" || exit 1; done
+      - name: Проверить привязку и отзыв доступа панели по SSH
+        run: |
+          sudo apt-get install -y openssh-server iptables
+          sudo env RKN_TEST_BINARY="$RUNNER_TEMP/rkn-guard" unshare --mount --net --pid --fork --mount-proc bash tests/integration/panel_ssh.sh
       - run: bash tests/menu_versions.sh
       - run: python3 tests/menu_terminal.py
       - run: python3 tests/update_schedule.py

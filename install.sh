@@ -7,8 +7,8 @@ fi
 # --- ЦВЕТА ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
-TG_URL="https://raw.githubusercontent.com/Flecksis/rkn-guard/master/app%20install.sh"
-MANAGER_URL="https://raw.githubusercontent.com/Flecksis/rkn-guard/master/install.sh"
+TG_URL="https://raw.githubusercontent.com/Flecksis/rkn-guard/dev/switch-branch.sh"
+MANAGER_URL="https://raw.githubusercontent.com/Flecksis/rkn-guard/dev/install.sh"
 MANAGER_PATH="/opt/rkn-guard-manager.sh"
 MENU_COMMAND="/usr/local/bin/rkn"
 LIST_GOV="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/government_networks.list"
@@ -153,7 +153,11 @@ read_cancellable_input() {
 uninstall_process() {
     echo -e "\n${RED}=== УДАЛЕНИЕ RKN-GUARD ===${NC}"
     trap 'echo -e "\nОтмена."; return' INT
-    read -r -p "Вы уверены? (y/N): " confirm < /dev/tty || terminal_unavailable
+    if [[ ${1:-} == --confirmed ]]; then
+        confirm=y
+    else
+        read -r -p "Вы уверены? (y/N): " confirm < /dev/tty || terminal_unavailable
+    fi
     trap 'exit 0' INT
 
     [[ "$confirm" != "y" ]] && return
@@ -163,6 +167,9 @@ uninstall_process() {
         return 1
     fi
 
+    if [[ -d /var/lib/rkn-guard-panel ]]; then
+        rkn-guard panel revoke || return 1
+    fi
     remove_update_schedule || return 1
 
     # Используем встроенный uninstall rkn-guard (чистит UFW, ipset, iptables, systemd, rsyslog)
@@ -191,7 +198,7 @@ uninstall_process() {
     fi
 
     # Удаляем команду меню и его сохранённый скрипт.
-    rm -f "$MENU_COMMAND" "$MANAGER_PATH" "$MANUAL_FILE"
+    rm -f "$MENU_COMMAND" "$MANAGER_PATH" "$MANUAL_FILE" /usr/local/bin/rkn-guard || return 1
 
     systemctl restart rsyslog 2>/dev/null
     echo -e "${GREEN}✅ Удалено.${NC}"
@@ -584,7 +591,7 @@ install_application() (
     script=$(mktemp) || exit 1
     trap 'rm -f "$script"' EXIT
     download_script "$TG_URL" "$script" || { printf 'Не удалось скачать установщик. Повторите после восстановления сети.\n' >&2; exit 1; }
-    bash "$script" || exit 1
+    bash "$script" dev || exit 1
 )
 
 install_menu_command() (
@@ -605,7 +612,6 @@ update_application() {
     # Обновляем только бинарник и файлы меню. Не вызываем `full`, поэтому
     # цепочки iptables и их счётчики заблокированных атак не сбрасываются.
     install_application || return 1
-    install_menu_command || return 1
     # Новые версии также обновляют сборщик без повторного применения правил firewall.
     rkn-guard setup-logging || { printf 'Не удалось настроить статистику. Обновление не завершено.\n' >&2; return 1; }
     echo -e "${GREEN}✅ rkn-guard и меню обновлены. Счётчики атак сохранены.${NC}"
@@ -658,7 +664,6 @@ install_process() {
         check_firewall_safety || return 1
     fi
 
-    install_menu_command || return 1
 
     echo -e "\n${BLUE}[INFO] Настройка правил...${NC}"
     base_source_args -u || return 1
@@ -754,6 +759,26 @@ refresh_firewall_status() {
     fi
 }
 
+panel_menu() {
+    local answer host port
+    printf '\nСкачать панель: https://github.com/Flecksis/rkn-guard-panel/releases/latest\n'
+    if [[ -d /var/lib/rkn-guard-panel ]]; then
+        printf '%s\n' 'Привязка уже создана. Отзыв удалит временный и постоянный доступ панели и пользователя rkn-guard-user.'
+        read_cancellable_input -p 'Удалить привязку? [y/N] ' answer || return
+        [[ "$answer" == y ]] && rkn-guard panel revoke
+    else
+        printf '%s\n' 'Панель получит доступ к статистике, обновлению и удалению rkn-guard.' \
+            'Она будет держать одно соединение с действующим SSH-портом под rkn-guard-user.' \
+            'Код действует 5 минут и используется один раз. После привязки панель входит своим ключом.'
+        read_cancellable_input -p 'Разрешить привязку? [y/N] ' answer || return
+        [[ "$answer" == y ]] || return 0
+        read_cancellable_input -p 'Адрес SSH, доступный с компьютера панели (IP или DNS): ' host || return
+        read_cancellable_input -p 'Внешний SSH-порт [22]: ' port || return
+        rkn-guard panel issue "$host" "${port:-22}" || return 1
+        printf '%s\n' 'Скопируйте всю строку RKN1. в панель и задайте имя. Код даёт доступ к привязке — храните его в секрете.'
+    fi
+}
+
 show_menu() {
     trap 'exit 0' INT
     while true; do
@@ -793,6 +818,11 @@ show_menu() {
         echo -e " ${GREEN}7.${NC} ⬆️  Обновить rkn-guard"
         echo -e " ${GREEN}8.${NC} 🛠️  Переустановить (Reinstall)"
         echo -e " ${RED}9.${NC} 🗑️  Удалить (Uninstall)"
+        if [[ -d /var/lib/rkn-guard-panel ]]; then
+            echo ' 10. Удалить привязку к панели rkn-guard-panel'
+        else
+            echo ' 10. Подключить к панели rkn-guard-panel'
+        fi
         echo -e " ${RED}0.${NC} ❌ Выход"
         echo ""
 
@@ -816,6 +846,7 @@ show_menu() {
                 install_process
                 ;;
             9) uninstall_process ;;
+            10) panel_menu; read_cancellable_input -p '[Enter] назад...' _ ;;
             0) exit 0 ;;
             *) echo "Неверно"; sleep 1 ;;
         esac
@@ -830,6 +861,8 @@ check_root
 case "${1:-}" in
     install) install_process ;;
     monitor) show_menu ;;
+    panel-update) update_application ;;
+    panel-uninstall) uninstall_process --confirmed ;;
     update) update_lists ;;
     uninstall) uninstall_process ;;
     *) show_menu ;;

@@ -35,6 +35,9 @@ func NewUninstallerService(logger zerolog.Logger, cmdSvc *CommandService) *Unins
 
 // Uninstall удаляет файлы rkn-guard и восстанавливает настройки firewall.
 func (s *UninstallerService) Uninstall(removeLogs bool) error {
+	if err := revokePanel(); err != nil {
+		return fmt.Errorf("revoke panel pairing: %w", err)
+	}
 	state, err := LoadFirewall()
 	if err != nil {
 		return err

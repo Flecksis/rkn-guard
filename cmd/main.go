@@ -26,6 +26,13 @@ var (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "panel" {
+		if err := service.RunPanel(os.Args[2:]...); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// Настраиваем журнал.
 	log := logger.New()
 	logger.SetGlobalLogger(log)

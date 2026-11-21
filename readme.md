@@ -14,13 +14,51 @@
 
 ## Установка
 
-Для установки нужны Linux с systemd, `curl` и права root или `sudo`. Установщик добавит зависимости, включая Python 3 для статистики.
+Для установки dev подготовьте Git и Go, как описано ниже. Также нужны Linux с systemd, `curl` и права root или `sudo`. Установщик добавит зависимости, включая Python 3 для статистики.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Flecksis/rkn-guard/master/install.sh | sudo bash -s -- install
+curl -fsSL https://raw.githubusercontent.com/Flecksis/rkn-guard/dev/install.sh | sudo bash -s -- install
 ```
 
 Автоматический режим определяет текущий межсетевой экран и выбирает nftables на чистом сервере. Вручную можно выбрать nftables, iptables + ipset (в том числе с UFW) или активный firewalld с бэкендом nftables.
+
+## Переход между dev и master на установленном сервере
+
+Команды выполняются на Linux-сервере с установленным rkn-guard и systemd. Для сборки нужны Git и Go версии из go.mod (сейчас 1.25.3) или Go 1.21+ с доступной автоматической загрузкой toolchain. Нужен доступ к GitHub и зависимостям Go. На Debian/Ubuntu установите инструменты через apt, на Fedora/RHEL-подобных системах — через dnf.
+
+| ОС | Подготовка |
+| --- | --- |
+| Debian / Ubuntu | `sudo apt-get update && sudo apt-get install -y git golang-go curl openssh-server sudo` |
+| Fedora / Rocky / AlmaLinux | `sudo dnf install -y git golang curl openssh-server sudo` |
+
+Проверьте `go version`. Если дистрибутив поставляет более старую версию, установите актуальный Go с https://go.dev/doc/install в /usr/local/go. Для переключения скачайте скрипт и запустите его с именем ветки. Он собирает бинарник и ставит меню из одного коммита, сохраняя действующие правила и счётчики.
+
+**Перейти на dev**
+
+```bash
+switcher=$(mktemp) && curl -fsSLo "$switcher" https://raw.githubusercontent.com/Flecksis/rkn-guard/dev/switch-branch.sh &&
+sudo bash "$switcher" dev && rm -f "$switcher"
+rkn-guard build-info
+sudo rkn
+```
+
+**Вернуться на master**
+
+```bash
+switcher=$(mktemp) && curl -fsSLo "$switcher" https://raw.githubusercontent.com/Flecksis/rkn-guard/dev/switch-branch.sh &&
+sudo bash "$switcher" master && rm -f "$switcher"
+rkn-guard build-info
+```
+
+При возврате на master скрипт отзывает доступ панели до замены программы. Вторая строка build-info показывает установленную ветку. Обновление через меню dev снова берёт dev. Меню master использует штатный стабильный релиз.
+
+### Привязка панели в dev
+
+Откройте `sudo rkn` → **Подключить к панели rkn-guard-panel**, прочитайте условия и разрешите привязку. Укажите адрес и внешний порт действующего OpenSSH, доступные с компьютера панели. Требуются Python 3.8+, sudo, стандартный файл .ssh/authorized_keys, публичная аутентификация, разрешённый вход rkn-guard-user и ключ хоста Ed25519. Новый порт открывать не требуется.
+
+В приложении нажмите **Добавить по коду**, вставьте строку RKN1 и задайте имя сервера. Код содержит временный приватный ключ, действует пять минут и погашается при первом обмене. Постоянный приватный ключ создаёт приложение. Панель проверяет ключ хоста и выполняет мониторинг, обновление и удаление через SSH. При смене IP обновите адрес в профиле или используйте стабильное DNS-имя.
+
+Для отзыва выберите **Удалить привязку к панели rkn-guard-panel** или выполните `sudo rkn-guard panel revoke`. Это также позволяет заменить истёкший код. Удаление rkn-guard удаляет серверные файлы привязки, правило sudo и служебного пользователя. Профиль и история в приложении остаются на вашем компьютере.
 
 ## Управление
 
