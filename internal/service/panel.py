@@ -226,6 +226,37 @@ def events(cursor):
     return rows, json.dumps(positions)
 
 
+def system_metrics():
+    mem = {}
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        name, value = line.split(":", 1)
+        if name in ("MemTotal", "MemAvailable"):
+            mem[name] = int(value.split()[0]) * 1024
+    cpu = [int(n) for n in Path("/proc/stat").read_text().splitlines()[0].split()[1:9]]
+    routes = Path("/proc/net/route").read_text().splitlines()[1:]
+    defaults = [r for line in routes if (r := line.split())[1] == "00000000" and int(r[3], 16) & 1]
+    if defaults:
+        interface = min(defaults, key=lambda r: int(r[6]))[0]
+    else:
+        routes6 = Path("/proc/net/ipv6_route").read_text().splitlines()
+        defaults6 = [r for line in routes6 if (r := line.split())[1] == "00" and r[-1] != "lo" and int(r[8], 16) & 1]
+        interface = min(defaults6, key=lambda r: int(r[5], 16))[-1] if defaults6 else None
+    net = {}
+    for line in Path("/proc/net/dev").read_text().splitlines()[2:]:
+        name, values = line.rsplit(":", 1)
+        if name.strip() == interface:
+            fields = values.split()
+            net = dict(interface=interface, rx=int(fields[0]), tx=int(fields[8]))
+            break
+    fs = os.statvfs("/")
+    return dict(uptime=float(Path("/proc/uptime").read_text().split()[0]),
+                cores=os.cpu_count(), load=os.getloadavg(), cpu_total=sum(cpu),
+                cpu_idle=cpu[3] + cpu[4], mem_total=mem["MemTotal"],
+                mem_used=mem["MemTotal"] - mem["MemAvailable"],
+                disk_total=fs.f_blocks * fs.f_frsize,
+                disk_used=(fs.f_blocks - fs.f_bfree) * fs.f_frsize, **net)
+
+
 def rpc(mode, nonce, expires, request):
     with locked():
         check_owner()
@@ -243,7 +274,11 @@ def rpc(mode, nonce, expires, request):
         if op == "snapshot":
             backend = run(BIN, "firewall-status").splitlines()[0]
             rows, cursor = events(request.get("cursor", ""))
-            return dict(version=run(BIN, "build-info").splitlines()[0], firewall=backend,
+            try:
+                metrics = system_metrics()
+            except (OSError, ValueError, IndexError, KeyError):
+                metrics = None
+            return dict(version=run(BIN, "build-info").splitlines()[0], firewall=backend, system=metrics,
                         boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
                         cursor=cursor, events=rows, families=counters(backend))
         if op == "update":

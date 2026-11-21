@@ -67,6 +67,10 @@ s = json.load(open(sys.argv[1]))
 assert s["ok"], s
 assert {f["family"] for f in s["data"]["families"]} == {"4", "6"}
 assert s["data"]["events"][0]["port"] == 443
+system = s["data"]["system"]
+assert system["cores"] > 0 and system["cpu_total"] >= system["cpu_idle"]
+assert 0 <= system["mem_used"] <= system["mem_total"]
+assert 0 <= system["disk_used"] <= system["disk_total"]
 PY
 python3 -c 'import json,sys; print(json.dumps(dict(op="snapshot",cursor=json.load(open(sys.argv[1]))["data"]["cursor"])))' "$root/snap" | snap | python3 -c 'import json,sys; assert json.load(sys.stdin)["data"]["events"] == []'
 rkn-guard panel revoke
