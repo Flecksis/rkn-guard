@@ -56,12 +56,16 @@ printf '{"op":"shell"}\n' | "${ssh[@]}" -M -S "$root/control" -o ControlPersist=
 mkdir -p /var/log
 printf '%s\n' '2026-01-02T03:04:05+00:00 host kernel: ANTISCAN-v4: SRC=192.0.2.1 PROTO=TCP DPT=443' >/var/log/iptables-scanners-ipv4.log
 printf '%s\n' 'v4|198.51.100.9|AS64500|Сеть теста|7|2025-01-02T03:04:05+00:00' >/var/log/iptables-scanners-aggregate.csv
+{
+    for _ in {1..210}; do echo пробел; done
+    printf '%s\n' '2025-12-31T09:00:00+00:00 host kernel: ANTISCAN-v6: SRC=2001:db8::9 PROTO=UDP DPT=53'
+} | gzip > /var/log/iptables-scanners-ipv6.log.2.gz
 iptables -N SCANNERS-BLOCK
 iptables -A SCANNERS-BLOCK -j DROP
 ip6tables -N SCANNERS-BLOCK
 ip6tables -A SCANNERS-BLOCK -j DROP
 snap() { "${ssh[@]}" -S "$root/control" "$target" 'panel session'; }
-echo '{"op":"snapshot"}' | snap > "$root/snap"
+echo '{"op":"snapshot","archive_cursor":""}' | snap > "$root/snap"
 python3 - "$root/snap" <<'PY'
 import json, sys
 s = json.load(open(sys.argv[1]))
@@ -75,7 +79,9 @@ assert system["cores"] > 0 and system["cpu_total"] >= system["cpu_idle"]
 assert 0 <= system["mem_used"] <= system["mem_total"]
 assert 0 <= system["disk_used"] <= system["disk_total"]
 assert "branch" in s["data"]["version_info"]
+assert s["data"]["log_archive"]["cursor"]
 PY
+python3 -c 'import json,sys; print(json.dumps(dict(op="snapshot",archive_cursor=json.load(open(sys.argv[1]))["data"]["log_archive"]["cursor"])))' "$root/snap" | snap | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]["log_archive"]; assert d["cursor"] is None; assert any(e["source"]=="2001:db8::9" and e["port"]==53 for e in d["events"])'
 python3 -c 'import json,sys; print(json.dumps(dict(op="snapshot",cursor=json.load(open(sys.argv[1]))["data"]["cursor"])))' "$root/snap" | snap | python3 -c 'import json,sys; assert json.load(sys.stdin)["data"]["events"] == []'
 cat > /opt/rkn-guard-manager.sh <<'SH'
 #!/bin/sh

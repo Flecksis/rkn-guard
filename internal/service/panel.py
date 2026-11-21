@@ -4,6 +4,7 @@ import contextlib
 import csv
 import datetime
 import fcntl
+import gzip
 import heapq
 import ipaddress
 import json
@@ -183,6 +184,77 @@ def counters(backend):
     return result
 
 
+def parse_event(raw, reference):
+    line = raw.decode(errors="replace").rstrip()
+    if not re.search(r"ANTISCAN-v[46]:", line) or re.search(r"ANTISCAN-v[46]: rkn-guard-check-[0-9a-f]{32}\b", line):
+        return None
+    fields = dict(re.findall(r"\b(SRC|PROTO|DPT)=([^\s]+)", line))
+    if not fields.get("SRC") or not fields.get("PROTO"):
+        return None
+    try:
+        ipaddress.ip_address(fields["SRC"])
+        port = int(fields["DPT"]) if "DPT" in fields else None
+        if port is not None and not 0 <= port <= 65535:
+            return None
+        try:
+            stamp = datetime.datetime.fromisoformat(line.split()[0].replace("Z", "+00:00"))
+        except ValueError:
+            stamp = datetime.datetime.strptime(f"{reference.year} {line[:15]}", "%Y %b %d %H:%M:%S")
+            if stamp > reference + datetime.timedelta(days=1):
+                stamp = stamp.replace(year=reference.year - 1)
+        return dict(time=int(stamp.timestamp()), source=fields["SRC"],
+                    protocol=fields["PROTO"], port=port, raw=line[:1500])
+    except (ValueError, OverflowError):
+        return None
+
+
+def archive_events(cursor):
+    files = {}
+    for path in Path("/var/log").glob("iptables-scanners-ipv*.log*"):
+        if path.is_symlink() or not re.fullmatch(r"iptables-scanners-ipv[46]\.log(?:\.\d+|-\d{8})?(?:\.gz)?", path.name):
+            continue
+        try:
+            info = path.stat()
+        except FileNotFoundError:
+            continue
+        if path.is_file():
+            files[f"{info.st_dev}:{info.st_ino}"] = (path, info)
+    if cursor:
+        pending, offset = json.loads(cursor)
+        if not isinstance(pending, list) or len(pending) > 100 or not isinstance(offset, int) or not 0 <= offset < 1 << 32:
+            raise ValueError("Некорректная позиция архива")
+    else:
+        pending = sorted(files, key=lambda key: files[key][1].st_mtime, reverse=True)[:100]
+        offset = 0
+    rows = []
+    budget = 200
+    while pending and budget:
+        entry = files.get(pending[0])
+        if entry:
+            path, info = entry
+            opener = gzip.open if path.suffix == ".gz" else open
+            reference = datetime.datetime.fromtimestamp(info.st_mtime)
+            try:
+                with opener(path, "rb") as stream:
+                    stream.seek(offset if path.suffix == ".gz" or offset <= info.st_size else 0)
+                    while budget:
+                        raw = stream.readline(8192)
+                        if not raw:
+                            break
+                        if raw.endswith(b"\n"):
+                            event = parse_event(raw, reference)
+                            if event:
+                                rows.append(event)
+                        budget -= 1
+                    if not budget:
+                        return dict(events=rows, cursor=json.dumps([pending, stream.tell()]))
+            except (OSError, EOFError):
+                pass
+        pending.pop(0)
+        offset = 0
+    return dict(events=rows, cursor=None)
+
+
 def events(cursor):
     # У каждого журнала своя позиция чтения. Пути заданы на сервере.
     previous = json.loads(cursor) if cursor else {}
@@ -205,26 +277,13 @@ def events(cursor):
                 raw = stream.readline(8192)
                 if not raw:
                     break
-                line = raw.decode(errors="replace").rstrip()
-                fields = dict(re.findall(r"\b(SRC|PROTO|DPT)=([^\s]+)", line))
-                if not fields.get("SRC") or not fields.get("PROTO"):
-                    continue
-                try:
-                    ipaddress.ip_address(fields["SRC"])
-                    port = int(fields["DPT"]) if "DPT" in fields else None
-                    if port is not None and not 0 <= port <= 65535:
-                        continue
-                    try:
-                        stamp = datetime.datetime.fromisoformat(line.split()[0].replace("Z", "+00:00"))
-                    except ValueError:
-                        now = datetime.datetime.now()
-                        stamp = datetime.datetime.strptime(f"{now.year} {line[:15]}", "%Y %b %d %H:%M:%S")
-                        if stamp > now + datetime.timedelta(days=1):
-                            stamp = stamp.replace(year=now.year - 1)
-                    rows.append(dict(time=int(stamp.timestamp()), source=fields["SRC"],
-                                     protocol=fields["PROTO"], port=port, raw=line[:1500]))
-                except (ValueError, OverflowError):
-                    continue
+                if not raw.endswith(b"\n") and len(raw) < 8192:
+                    stream.seek(-len(raw), 1)
+                    break
+                if raw.endswith(b"\n"):
+                    event = parse_event(raw, datetime.datetime.now())
+                    if event:
+                        rows.append(event)
             positions[family] = [info.st_ino, stream.tell()]
     return rows, json.dumps(positions)
 
@@ -361,11 +420,14 @@ def rpc(mode, nonce, expires, request):
                 metrics = None
             installed, branch = run(BIN, "build-info").splitlines()[:2]
             latest = available_version(branch)
-            return dict(version=installed, firewall=backend, system=metrics,
+            data = dict(version=installed, firewall=backend, system=metrics,
                         version_info=dict(branch=branch, latest=latest),
                         attack_sources=attack_sources(),
                         boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
                         cursor=cursor, events=rows, families=counters(backend))
+            if isinstance(request.get("archive_cursor"), str):
+                data["log_archive"] = archive_events(request["archive_cursor"])
+            return data
         if op == "update":
             update_with_progress()
         elif op == "uninstall" and request.get("confirm") is True:
@@ -384,7 +446,7 @@ def main(args):
         data = sys.stdin.buffer.readline(16385)
         if len(data) > 16384 or not data.endswith(b"\n"):
             raise ValueError("Некорректный запрос")
-        print(json.dumps(dict(ok=True, data=rpc(*args[1:], json.loads(data)))))
+        print(json.dumps(dict(ok=True, data=rpc(*args[1:], json.loads(data))), ensure_ascii=False))
     elif len(args) == 3 and args[0] == "issue":
         with locked():
             print(issue(args[1], int(args[2])))
