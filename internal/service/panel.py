@@ -1,8 +1,10 @@
 """Привязка RKN1 и команды панели на сервере."""
 import base64
 import contextlib
+import csv
 import datetime
 import fcntl
+import heapq
 import ipaddress
 import json
 import os
@@ -313,6 +315,29 @@ def update_with_progress():
     (HOME / "version").unlink(missing_ok=True)
 
 
+def attack_sources():
+    # Читаем готовый CSV сборщика, включая события до подключения панели.
+    path = Path("/var/log/iptables-scanners-aggregate.csv")
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace", newline="") as source:
+            def rows():
+                for line in source:
+                    try:
+                        family, ip, asn, network, count, last = (
+                            field.strip() for field in next(csv.reader([line], delimiter="|", strict=True))
+                        )
+                        address = ipaddress.ip_address(ip)
+                        count = int(count)
+                    except (ValueError, csv.Error, StopIteration):
+                        continue
+                    if family == f"v{address.version}" and 0 < count <= (1 << 63) - 1:
+                        yield dict(ip=str(address), asn=asn[:64], network=network[:200],
+                                   count=count, last=last[:64])
+            return heapq.nsmallest(100, rows(), key=lambda row: (-row["count"], row["ip"]))
+    except OSError:
+        return None
+
+
 def rpc(mode, nonce, expires, request):
     with locked():
         check_owner()
@@ -338,6 +363,7 @@ def rpc(mode, nonce, expires, request):
             latest = available_version(branch)
             return dict(version=installed, firewall=backend, system=metrics,
                         version_info=dict(branch=branch, latest=latest),
+                        attack_sources=attack_sources(),
                         boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
                         cursor=cursor, events=rows, families=counters(backend))
         if op == "update":

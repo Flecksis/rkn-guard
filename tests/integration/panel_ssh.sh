@@ -55,6 +55,7 @@ if "${ssh[@]}" -i "$root/bootstrap" "$target" 'panel enroll' < "$root/enroll"; t
 printf '{"op":"shell"}\n' | "${ssh[@]}" -M -S "$root/control" -o ControlPersist=60 -i "$root/panel" "$target" 'panel session' | python3 -c 'import json,sys; assert not json.load(sys.stdin)["ok"]'
 mkdir -p /var/log
 printf '%s\n' '2026-01-02T03:04:05+00:00 host kernel: ANTISCAN-v4: SRC=192.0.2.1 PROTO=TCP DPT=443' >/var/log/iptables-scanners-ipv4.log
+printf '%s\n' 'v4|198.51.100.9|AS64500|Сеть теста|7|2025-01-02T03:04:05+00:00' >/var/log/iptables-scanners-aggregate.csv
 iptables -N SCANNERS-BLOCK
 iptables -A SCANNERS-BLOCK -j DROP
 ip6tables -N SCANNERS-BLOCK
@@ -67,6 +68,8 @@ s = json.load(open(sys.argv[1]))
 assert s["ok"], s
 assert {f["family"] for f in s["data"]["families"]} == {"4", "6"}
 assert s["data"]["events"][0]["port"] == 443
+source = s["data"]["attack_sources"][0]
+assert source["ip"] == "198.51.100.9" and source["count"] == 7 and source["asn"] == "AS64500"
 system = s["data"]["system"]
 assert system["cores"] > 0 and system["cpu_total"] >= system["cpu_idle"]
 assert 0 <= system["mem_used"] <= system["mem_total"]
