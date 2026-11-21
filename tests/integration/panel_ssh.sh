@@ -71,8 +71,22 @@ system = s["data"]["system"]
 assert system["cores"] > 0 and system["cpu_total"] >= system["cpu_idle"]
 assert 0 <= system["mem_used"] <= system["mem_total"]
 assert 0 <= system["disk_used"] <= system["disk_total"]
+assert "branch" in s["data"]["version_info"]
 PY
 python3 -c 'import json,sys; print(json.dumps(dict(op="snapshot",cursor=json.load(open(sys.argv[1]))["data"]["cursor"])))' "$root/snap" | snap | python3 -c 'import json,sys; assert json.load(sys.stdin)["data"]["events"] == []'
+cat > /opt/rkn-guard-manager.sh <<'SH'
+#!/bin/sh
+test "$1" = panel-update || exit 2
+echo RKN_STAGE:build
+sleep 6
+echo RKN_STAGE:install
+SH
+chmod 755 /opt/rkn-guard-manager.sh
+echo '{"op":"update"}' | snap > "$root/update" 2> "$root/progress"
+python3 -c 'import json,sys; assert json.load(sys.stdin)["ok"]' < "$root/update"
+grep -qx 'RKN_STAGE:build' "$root/progress"
+grep -qx 'RKN_STAGE:heartbeat' "$root/progress"
+grep -qx 'RKN_STAGE:install' "$root/progress"
 rkn-guard panel revoke
 if "${ssh[@]}" -S "$root/control" "$target" 'panel session' <<< '{"op":"update"}' > "$root/revoked"; then
     python3 -c 'import json,sys; assert not json.load(sys.stdin)["ok"]' < "$root/revoked"

@@ -613,6 +613,7 @@ update_application() {
     # цепочки iptables и их счётчики заблокированных атак не сбрасываются.
     install_application || return 1
     # Новые версии также обновляют сборщик без повторного применения правил firewall.
+    if [[ ${1:-} == panel ]]; then printf '%s\n' 'RKN_STAGE:logging'; fi
     rkn-guard setup-logging || { printf 'Не удалось настроить статистику. Обновление не завершено.\n' >&2; return 1; }
     echo -e "${GREEN}✅ rkn-guard и меню обновлены. Счётчики атак сохранены.${NC}"
     sleep 2
@@ -874,7 +875,7 @@ check_root
 case "${1:-}" in
     install) install_process ;;
     monitor) show_menu ;;
-    panel-update) update_application ;;
+    panel-update) RKN_PANEL_PROGRESS=1 update_application panel ;;
     panel-uninstall) uninstall_process --confirmed ;;
     update) update_lists ;;
     uninstall) uninstall_process ;;

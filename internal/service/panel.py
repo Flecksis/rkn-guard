@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 USER = "rkn-guard-user"
@@ -257,6 +258,61 @@ def system_metrics():
                 disk_used=(fs.f_blocks - fs.f_bfree) * fs.f_frsize, **net)
 
 
+def available_version(branch):
+    if branch != "dev":
+        return None
+    cache = HOME / "version"
+    try:
+        if time.time() - cache.stat().st_mtime < 600:
+            return cache.read_text() or None
+    except OSError:
+        pass
+    try:
+        output = subprocess.check_output(
+            ["git", "ls-remote", "--exit-code", "https://github.com/Flecksis/rkn-guard.git", "refs/heads/dev"],
+            text=True, stderr=subprocess.DEVNULL, timeout=7,
+            env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
+        )
+        revision = output.split()[0]
+        if not re.fullmatch(r"[0-9a-f]{40}", revision):
+            return None
+    except (OSError, subprocess.SubprocessError, IndexError):
+        revision = ""
+    atomic(cache, revision, 0o600)
+    return revision or None
+
+
+def update_with_progress():
+    def emit(stage):
+        print("RKN_STAGE:" + stage, file=sys.stderr, flush=True)
+
+    emit("prepare")
+    done = threading.Event()
+    with subprocess.Popen([MANAGER, "panel-update"], text=True, errors="replace",
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as proc:
+        def heartbeat():
+            while not done.wait(5):
+                if proc.poll() is None:
+                    emit("heartbeat")
+
+        thread = threading.Thread(target=heartbeat, daemon=True)
+        thread.start()
+        last_line = ""
+        try:
+            for line in proc.stdout:
+                clean = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+                if clean.startswith("RKN_STAGE:"):
+                    emit(clean.partition(":")[2])
+                elif clean:
+                    last_line = clean[:250]
+            if proc.wait():
+                raise ValueError(f"Обновление завершилось с ошибкой: {last_line or proc.returncode}")
+        finally:
+            done.set()
+            thread.join()
+    (HOME / "version").unlink(missing_ok=True)
+
+
 def rpc(mode, nonce, expires, request):
     with locked():
         check_owner()
@@ -278,11 +334,14 @@ def rpc(mode, nonce, expires, request):
                 metrics = system_metrics()
             except (OSError, ValueError, IndexError, KeyError):
                 metrics = None
-            return dict(version=run(BIN, "build-info").splitlines()[0], firewall=backend, system=metrics,
+            installed, branch = run(BIN, "build-info").splitlines()[:2]
+            latest = available_version(branch)
+            return dict(version=installed, firewall=backend, system=metrics,
+                        version_info=dict(branch=branch, latest=latest),
                         boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
                         cursor=cursor, events=rows, families=counters(backend))
         if op == "update":
-            run(MANAGER, "panel-update")
+            update_with_progress()
         elif op == "uninstall" and request.get("confirm") is True:
             # Отзываем доступ под блокировкой до запуска удаления.
             revoke(disconnect=False)
