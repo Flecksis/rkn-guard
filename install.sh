@@ -760,7 +760,7 @@ refresh_firewall_status() {
 }
 
 panel_menu() {
-    local answer host port
+    local answer host port client client_port family route
     printf '\nСкачать панель: https://github.com/Flecksis/rkn-guard-panel/releases/latest\n'
     if [[ -d /var/lib/rkn-guard-panel ]]; then
         printf '%s\n' 'Привязка уже создана. Отзыв удалит временный и постоянный доступ панели и пользователя rkn-guard-user.'
@@ -772,9 +772,22 @@ panel_menu() {
             'Код действует 5 минут и используется один раз. После привязки панель входит своим ключом.'
         read_cancellable_input -p 'Разрешить привязку? [y/N] ' answer || return
         [[ "$answer" == y ]] || return 0
-        read_cancellable_input -p 'Адрес SSH, доступный с компьютера панели (IP или DNS): ' host || return
-        read_cancellable_input -p 'Внешний SSH-порт [22]: ' port || return
-        rkn-guard panel issue "$host" "${port:-22}" || return 1
+        builtin read -r client client_port host port <<< "${SSH_CONNECTION:-}"
+        if [[ -z "$host" || ! "$port" =~ ^[0-9]+$ ]]; then
+            host=''
+            for family in -4 -6; do
+                if [[ $family == -4 ]]; then route=192.0.2.1; else route=2001:db8::1; fi
+                host=$(ip "$family" route get "$route" 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="src"){print $(i+1); exit}}')
+                [[ -n "$host" ]] && break
+            done
+            port=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')
+        fi
+        if [[ -z "$host" || -z "$port" ]]; then
+            printf 'Не удалось определить адрес SSH. Запустите меню из SSH-сеанса: sudo --preserve-env=SSH_CONNECTION rkn\n' >&2
+            return 1
+        fi
+        printf 'SSH для панели: %s (порт %s)\n' "$host" "$port"
+        rkn-guard panel issue "$host" "$port" || return 1
         printf '%s\n' 'Скопируйте всю строку RKN1. в панель и задайте имя. Код даёт доступ к привязке — храните его в секрете.'
     fi
 }
@@ -817,12 +830,12 @@ show_menu() {
         echo -e " ${GREEN}6.${NC} 📡 Доп списки подсетей"
         echo -e " ${GREEN}7.${NC} ⬆️  Обновить rkn-guard"
         echo -e " ${GREEN}8.${NC} 🛠️  Переустановить (Reinstall)"
-        echo -e " ${RED}9.${NC} 🗑️  Удалить (Uninstall)"
         if [[ -d /var/lib/rkn-guard-panel ]]; then
-            echo ' 10. Удалить привязку к панели rkn-guard-panel'
+            echo -e " ${GREEN}9.${NC} Удалить привязку к панели rkn-guard-panel"
         else
-            echo ' 10. Подключить к панели rkn-guard-panel'
+            echo -e " ${GREEN}9.${NC} Подключить к панели rkn-guard-panel"
         fi
+        echo -e " ${RED}10.${NC} 🗑️  Удалить (Uninstall)"
         echo -e " ${RED}0.${NC} ❌ Выход"
         echo ""
 
@@ -845,8 +858,8 @@ show_menu() {
             8)
                 install_process
                 ;;
-            9) uninstall_process ;;
-            10) panel_menu; read_cancellable_input -p '[Enter] назад...' _ ;;
+            10) uninstall_process ;;
+            9) panel_menu; read_cancellable_input -p '[Enter] назад...' _ ;;
             0) exit 0 ;;
             *) echo "Неверно"; sleep 1 ;;
         esac
