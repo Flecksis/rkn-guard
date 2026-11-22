@@ -14,10 +14,10 @@
 
 ## Установка
 
-Для установки dev подготовьте Git и Go, как описано ниже. Также нужны Linux с systemd, `curl` и права root или `sudo`. Установщик добавит зависимости, включая Python 3 для статистики.
+Для установки нужны Linux с systemd, `curl` и права root или `sudo`. Установщик скачает готовый бинарник и поставит зависимости.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Flecksis/rkn-guard/dev/install.sh | sudo bash -s -- install
+curl -fsSL https://raw.githubusercontent.com/Flecksis/rkn-guard/master/install.sh | sudo bash -s -- install
 ```
 
 Автоматический режим определяет текущий межсетевой экран и выбирает nftables на чистом сервере. Вручную можно выбрать nftables, iptables + ipset (в том числе с UFW) или активный firewalld с бэкендом nftables.
@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/Flecksis/rkn-guard/dev/install.sh |
 **Перейти на dev**
 
 ```bash
-switcher=$(mktemp) && curl -fsSLo "$switcher" https://raw.githubusercontent.com/Flecksis/rkn-guard/dev/switch-branch.sh &&
+switcher=$(mktemp) && curl -fsSLo "$switcher" https://raw.githubusercontent.com/Flecksis/rkn-guard/master/switch-branch.sh &&
 sudo bash "$switcher" dev && rm -f "$switcher"
 rkn-guard build-info
 sudo rkn
@@ -45,14 +45,16 @@ sudo rkn
 **Вернуться на master**
 
 ```bash
-switcher=$(mktemp) && curl -fsSLo "$switcher" https://raw.githubusercontent.com/Flecksis/rkn-guard/dev/switch-branch.sh &&
+switcher=$(mktemp) && curl -fsSLo "$switcher" https://raw.githubusercontent.com/Flecksis/rkn-guard/master/switch-branch.sh &&
 sudo bash "$switcher" master && rm -f "$switcher"
 rkn-guard build-info
 ```
 
-При возврате на master скрипт отзывает доступ панели до замены программы. Вторая строка build-info показывает установленную ветку. Обновление через меню dev снова берёт dev. Меню master использует штатный стабильный релиз.
+Для перехода на master с сохранением привязки скачивайте switch-branch.sh из master. Вторая строка build-info показывает установленную ветку. Меню master обновляет программу из стабильного релиза.
 
-### Привязка панели в dev
+### Подключение к панели
+
+Скачайте [rkn-guard-panel для Windows](https://github.com/Flecksis/rkn-guard-panel/releases/latest). Панель показывает нагрузку, отброшенные пакеты и историю по серверам. В ней можно менять ручные баны, исключения, источники и расписание, обновлять и переустанавливать rkn-guard на нескольких узлах.
 
 Откройте `sudo rkn` → **9. Подключить к панели rkn-guard-panel**, прочитайте условия и разрешите привязку. Меню берёт адрес и порт сервера из SSH-сеанса. Без данных сеанса оно использует исходящий адрес сервера и порт sshd. Если у сервера NAT с пробросом портов, выдайте код с внешним адресом и портом командой `sudo rkn-guard panel issue ВНЕШНИЙ_АДРЕС ВНЕШНИЙ_ПОРТ`. Требуются Python 3.8+, sudo, стандартный файл .ssh/authorized_keys, публичная аутентификация, разрешённый вход rkn-guard-user и ключ хоста Ed25519. Новый порт открывать не требуется.
 
@@ -90,6 +92,9 @@ rkn
 | `sudo rkn uninstall` | Запустить удаление с подтверждением |
 | `rkn-guard --version` | Показать версию бинарника |
 | `rkn-guard build-info` | Вывести версию и ветку сборки отдельными строками |
+| `sudo rkn-guard panel issue АДРЕС ПОРТ` | Выдать одноразовый код на пять минут для указанного адреса и порта SSH |
+| `sudo rkn-guard panel revoke` | Отозвать код и постоянный ключ, удалить служебного пользователя панели |
+| `rkn-guard panel --help` | Показать команды привязки |
 | `rkn-guard --help` | Показать доступные команды |
 | `rkn-guard help full` или `rkn-guard full --help` | Посмотреть синтаксис и параметры конкретной команды |
 | `rkn-guard completion bash` | Вывести скрипт автодополнения. Также доступны `zsh`, `fish` и `powershell` |
@@ -136,6 +141,7 @@ sudo rkn-guard update -u "$LIST_URL"
 | `sudo rkn-guard sources add https://example.org/networks.txt` | Проверить файл и добавить источник |
 | `sudo rkn-guard sources list` | Посмотреть номера, состояние и сведения о последних загрузках |
 | `sudo rkn-guard sources enable 1` | Включить источник |
+| `sudo rkn-guard sources enable URL` | Выбрать источник по адресу вместо локального номера. Адрес также принимают `disable`, `remove`, `base-enable` и `base-disable` |
 | `sudo rkn-guard sources disable 1` | Временно отключить источник |
 | `sudo rkn-guard sources remove 1` | Удалить источник из конфигурации |
 
