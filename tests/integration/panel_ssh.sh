@@ -65,6 +65,13 @@ iptables -A SCANNERS-BLOCK -j DROP
 ip6tables -N SCANNERS-BLOCK
 ip6tables -A SCANNERS-BLOCK -j DROP
 snap() { "${ssh[@]}" -S "$root/control" "$target" 'panel session'; }
+install -m755 "$(dirname "$0")/../../install.sh" /opt/rkn-guard-manager.sh
+echo '{"op":"manage","action":"base-list"}' | snap | python3 -c 'import json,sys; assert "https://" in json.load(sys.stdin)["data"]["message"]'
+echo '{"op":"manage","action":"schedule-show"}' | snap | python3 -c 'import json,sys; assert "выключено" in json.load(sys.stdin)["data"]["message"]'
+echo '{"op":"manage","action":"interval","value":"0"}' | snap | python3 -c 'import json,sys; assert not json.load(sys.stdin)["ok"]'
+echo '{"op":"manage","action":"ban","value":"bad-ip"}' | snap | python3 -c 'import json,sys; assert not json.load(sys.stdin)["ok"]'
+echo '{"op":"manage","action":"ban-list"}' | snap | python3 -c 'import json,sys; assert json.load(sys.stdin)["ok"]'
+echo '{"op":"manage","action":"shell"}' | snap | python3 -c 'import json,sys; assert not json.load(sys.stdin)["ok"]'
 echo '{"op":"snapshot","archive_cursor":""}' | snap > "$root/snap"
 python3 - "$root/snap" <<'PY'
 import json, sys

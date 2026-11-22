@@ -397,6 +397,50 @@ def attack_sources():
         return None
 
 
+def manage(request):
+    action = request.get("action")
+    value = request.get("value", "")
+    if not isinstance(value, str) or len(value) > 4096:
+        raise ValueError("Некорректное значение")
+    if action in ("ban-list", "ban", "unban"):
+        args = [BIN, "manual-ips", {"ban-list":"list", "ban":"add", "unban":"delete"}[action]]
+        if action != "ban-list":
+            args.append(str(ipaddress.ip_address(value)))
+    elif action in ("exception-list", "exception-add", "exception-delete"):
+        args = [BIN, "exceptions", action.split("-")[1]]
+        if action != "exception-list":
+            ip, proto, port = value.split()
+            if proto not in ("tcp", "udp") or not port.isascii() or not port.isdigit() or not 1 <= int(port) <= 65535:
+                raise ValueError("Укажите IP, tcp или udp и порт от 1 до 65535")
+            args.extend([str(ipaddress.ip_address(ip)), proto, port])
+    elif action in ("list", "base-list", "add", "enable", "disable", "remove", "base-enable", "base-disable"):
+        args = [MANAGER, "panel-source", action]
+        if action not in ("list", "base-list"):
+            if not value.startswith(("https://", "http://")) or any(c.isspace() for c in value):
+                raise ValueError("Нужен URL списка подсетей")
+            args.append(value)
+    elif action == "refresh":
+        args = [MANAGER, "update"]
+    elif action == "schedule-show":
+        args = [MANAGER, "panel-schedule-show"]
+    elif action in ("interval", "hours", "msk", "local", "off"):
+        args = [MANAGER, "panel-schedule-set", action, value]
+    elif action == "reinstall" and value in ("auto", "iptables", "nftables", "firewalld"):
+        args = [MANAGER, "panel-reinstall", value]
+    else:
+        raise ValueError("Неизвестное действие")
+    with tempfile.TemporaryFile() as output:
+        result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT)
+        size = output.tell()
+        output.seek(max(0, size - 65536))
+        message = re.sub(r"\x1b\[[0-9;]*m", "", output.read().decode(errors="replace")).strip()
+        if size > 65536:
+            message = "Показан конец вывода.\n" + message
+    if result.returncode:
+        raise ValueError(message or f"Код завершения {result.returncode}")
+    return {"message": message or "Готово"}
+
+
 def rpc(mode, nonce, expires, request):
     with locked():
         check_owner()
@@ -428,6 +472,8 @@ def rpc(mode, nonce, expires, request):
             if isinstance(request.get("archive_cursor"), str):
                 data["log_archive"] = archive_events(request["archive_cursor"])
             return data
+        if op == "manage":
+            return manage(request)
         if op == "update":
             update_with_progress()
         elif op == "uninstall" and request.get("confirm") is True:

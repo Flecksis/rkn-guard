@@ -640,9 +640,13 @@ choose_firewall() {
 
 install_process() {
     trap 'exit 1' INT
-    clear
+    [[ -t 1 ]] && clear
     echo -e "${CYAN}🚀 УСТАНОВКА RKN-GUARD${NC}"
-    choose_firewall || return 1
+    if [[ ${1:-} == panel ]]; then
+        case "$2" in auto|iptables|nftables|firewalld) FIREWALL_CHOICE=$2 ;; *) return 1 ;; esac
+    else
+        choose_firewall || return 1
+    fi
 
     echo -e "\n${BLUE}[INFO] Установка...${NC}"
     if command -v apt-get >/dev/null; then
@@ -681,7 +685,7 @@ install_process() {
 
     rkn-guard setup-logging || { printf 'Статистика не настроена. Уже применённые правила защиты не удалены.\n' >&2; return 1; }
 
-    offer_install_schedule || return 1
+    if [[ ${1:-} != panel ]]; then offer_install_schedule || return 1; fi
 
     echo -e "\n${GREEN}✅ Установка завершена!${NC}"
     printf 'Открыть меню: %s\n' "$MENU_COMMAND"
@@ -876,6 +880,14 @@ case "${1:-}" in
     install) install_process ;;
     monitor) show_menu ;;
     panel-update) RKN_PANEL_PROGRESS=1 update_application panel ;;
+    panel-reinstall) DEBIAN_FRONTEND=noninteractive install_process panel "${2:-auto}" ;;
+    panel-schedule-show) show_update_schedule ;;
+    panel-schedule-set) set_update_schedule "$2" "${3:-}" ;;
+    panel-source)
+        source_command "${@:2}" || exit 1
+        case "$2" in enable|disable|remove|base-enable|base-disable)
+            update_lists || { echo 'Настройки сохранены, обновление подсетей завершилось с ошибкой.' >&2; exit 1; } ;;
+        esac ;;
     panel-uninstall) uninstall_process --confirmed ;;
     update) update_lists ;;
     uninstall) uninstall_process ;;

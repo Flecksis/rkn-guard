@@ -163,6 +163,34 @@ func newSourcesCommand() *cobra.Command {
 				return nil
 			}
 			id, err := strconv.Atoi(args[1])
+			if err != nil {
+				url, parseErr := service.NormalizeSourceURL(args[1])
+				if parseErr != nil {
+					return parseErr
+				}
+				var sources []service.ExtraSource
+				if action == "base-enable" || action == "base-disable" {
+					sources, err = store.BaseSources(baseURLs)
+				} else {
+					state, loadErr := store.Load()
+					if loadErr != nil {
+						return loadErr
+					}
+					sources, err = state.Extra, nil
+				}
+				if err != nil {
+					return err
+				}
+				for _, source := range sources {
+					if source.URL == url {
+						id = source.ID
+						break
+					}
+				}
+				if id == 0 {
+					return fmt.Errorf("такого списка на сервере нет")
+				}
+			}
 			if err != nil || id < 1 {
 				return fmt.Errorf("номер списка должен быть положительным целым числом")
 			}
