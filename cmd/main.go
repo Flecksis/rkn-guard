@@ -26,7 +26,7 @@ var (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "panel" {
+	if len(os.Args) > 2 && os.Args[1] == "panel" && os.Args[2] == "rpc" {
 		if err := service.RunPanel(os.Args[2:]...); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -84,6 +84,15 @@ func main() {
 	uninstallCmd.Flags().BoolVar(&removeLogs, "remove-logs", false, "Удалить логи rkn-guard из /var/log")
 
 	rootCmd.AddCommand(fullCmd)
+	panelCmd := &cobra.Command{Use: "panel", Short: "Привязка к rkn-guard-panel"}
+	panelCmd.AddCommand(&cobra.Command{
+		Use: "issue АДРЕС ПОРТ", Short: "Выдать одноразовый код SSH", Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error { return service.RunPanel("issue", args[0], args[1]) },
+	}, &cobra.Command{
+		Use: "revoke", Short: "Отозвать доступ панели", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error { return service.RunPanel("revoke") },
+	})
+	rootCmd.AddCommand(panelCmd)
 	rootCmd.AddCommand(newFirewallCommands()...)
 	rootCmd.AddCommand(&cobra.Command{
 		Use: "logs <v4|v6>", Short: "Показать новые события в таблице", Args: cobra.ExactArgs(1),

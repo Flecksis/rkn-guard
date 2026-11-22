@@ -7,8 +7,8 @@ fi
 # --- ЦВЕТА ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
-TG_URL="https://raw.githubusercontent.com/Flecksis/rkn-guard/dev/switch-branch.sh"
-MANAGER_URL="https://raw.githubusercontent.com/Flecksis/rkn-guard/dev/install.sh"
+TG_URL="https://raw.githubusercontent.com/Flecksis/rkn-guard/master/app%20install.sh"
+MANAGER_URL="https://raw.githubusercontent.com/Flecksis/rkn-guard/master/install.sh"
 MANAGER_PATH="/opt/rkn-guard-manager.sh"
 MENU_COMMAND="/usr/local/bin/rkn"
 LIST_GOV="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/government_networks.list"
@@ -591,7 +591,7 @@ install_application() (
     script=$(mktemp) || exit 1
     trap 'rm -f "$script"' EXIT
     download_script "$TG_URL" "$script" || { printf 'Не удалось скачать установщик. Повторите после восстановления сети.\n' >&2; exit 1; }
-    bash "$script" dev || exit 1
+    bash "$script" || exit 1
 )
 
 install_menu_command() (
@@ -612,6 +612,7 @@ update_application() {
     # Обновляем только бинарник и файлы меню. Не вызываем `full`, поэтому
     # цепочки iptables и их счётчики заблокированных атак не сбрасываются.
     install_application || return 1
+    install_menu_command || return 1
     # Новые версии также обновляют сборщик без повторного применения правил firewall.
     if [[ ${1:-} == panel ]]; then printf '%s\n' 'RKN_STAGE:logging'; fi
     rkn-guard setup-logging || { printf 'Не удалось настроить статистику. Обновление не завершено.\n' >&2; return 1; }
@@ -663,6 +664,7 @@ install_process() {
 
     install_application || return 1
 
+    install_menu_command || return 1
     FIREWALL_CHOICE=$(rkn-guard firewall-select "$FIREWALL_CHOICE") || return 1
     echo "Выбран firewall: $FIREWALL_CHOICE"
     if [[ "$FIREWALL_CHOICE" == iptables ]]; then
@@ -772,7 +774,7 @@ panel_menu() {
         read_cancellable_input -p 'Удалить привязку? [y/N] ' answer || return
         [[ "$answer" == y ]] && rkn-guard panel revoke
     else
-        printf '%s\n' 'Панель получит доступ к статистике, обновлению и удалению rkn-guard.' \
+        printf '%s\n' 'Панель сможет читать статистику, менять баны, исключения, списки и расписание, обновлять, переустанавливать и удалять rkn-guard.' \
             'Она будет держать одно соединение с действующим SSH-портом под rkn-guard-user.' \
             'Код действует 5 минут и используется один раз. После привязки панель входит своим ключом.'
         read_cancellable_input -p 'Разрешить привязку? [y/N] ' answer || return

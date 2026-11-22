@@ -14,6 +14,10 @@ if [[ ${RKN_PANEL_PROGRESS:-} == 1 ]]; then printf '%s\n' 'RKN_STAGE:clone'; fi
 git clone -q --depth 1 --single-branch --branch "$branch" https://github.com/Flecksis/rkn-guard.git "$work/src"
 cd "$work/src"
 revision=$(git rev-parse --short HEAD)
+if [[ $branch == master ]]; then
+    tag=$(git describe --tags --exact-match HEAD 2>/dev/null || true)
+    if [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then revision=$tag; fi
+fi
 if [[ ${RKN_PANEL_PROGRESS:-} == 1 ]]; then printf '%s\n' 'RKN_STAGE:build'; fi
 GOTOOLCHAIN=auto go build -trimpath -ldflags="-X main.version=$revision -X main.branch=$branch" -o "$binary" ./cmd
 bash -n install.sh
@@ -21,9 +25,6 @@ cp install.sh "$manager"
 printf '%s\n' '#!/bin/bash' 'exec /opt/rkn-guard-manager.sh "$@"' > "$wrapper"
 chmod 755 "$binary" "$manager" "$wrapper"
 "$binary" build-info
-if [[ $branch == master && -e /var/lib/rkn-guard-panel ]]; then
-    /usr/local/bin/rkn-guard panel revoke
-fi
 if [[ ${RKN_PANEL_PROGRESS:-} == 1 ]]; then printf '%s\n' 'RKN_STAGE:install'; fi
 mv -f "$binary" /usr/local/bin/rkn-guard
 mv -f "$manager" /opt/rkn-guard-manager.sh

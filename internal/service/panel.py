@@ -19,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 
 USER = "rkn-guard-user"
 HOME = Path("/var/lib/rkn-guard-panel")
@@ -320,24 +321,30 @@ def system_metrics():
 
 
 def available_version(branch):
-    if branch != "dev":
+    if branch not in ("dev", "master"):
         return None
-    cache = HOME / "version"
+    cache = HOME / ("version-" + branch)
     try:
         if time.time() - cache.stat().st_mtime < 600:
             return cache.read_text() or None
     except OSError:
         pass
     try:
-        output = subprocess.check_output(
-            ["git", "ls-remote", "--exit-code", "https://github.com/Flecksis/rkn-guard.git", "refs/heads/dev"],
-            text=True, stderr=subprocess.DEVNULL, timeout=7,
-            env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
-        )
-        revision = output.split()[0]
-        if not re.fullmatch(r"[0-9a-f]{40}", revision):
-            return None
-    except (OSError, subprocess.SubprocessError, IndexError):
+        if branch == "master":
+            with urllib.request.urlopen("https://api.github.com/repos/Flecksis/rkn-guard/releases/latest", timeout=7) as response:
+                revision = json.load(response)["tag_name"]
+            if not re.fullmatch(r"v\d+\.\d+\.\d+", revision):
+                return None
+        else:
+            output = subprocess.check_output(
+                ["git", "ls-remote", "--exit-code", "https://github.com/Flecksis/rkn-guard.git", "refs/heads/dev"],
+                text=True, stderr=subprocess.DEVNULL, timeout=7,
+                env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
+            )
+            revision = output.split()[0]
+            if not re.fullmatch(r"[0-9a-f]{40}", revision):
+                return None
+    except (OSError, subprocess.SubprocessError, IndexError, ValueError, KeyError):
         revision = ""
     atomic(cache, revision, 0o600)
     return revision or None
@@ -371,7 +378,8 @@ def update_with_progress():
         finally:
             done.set()
             thread.join()
-    (HOME / "version").unlink(missing_ok=True)
+    for name in ("version-dev", "version-master"):
+        (HOME / name).unlink(missing_ok=True)
 
 
 def attack_sources():
@@ -464,8 +472,12 @@ def rpc(mode, nonce, expires, request):
                 metrics = None
             installed, branch = run(BIN, "build-info").splitlines()[:2]
             latest = available_version(branch)
+            # Панель 0.5 сверяет latest как префикс git-хеша длиной от 7 знаков.
+            # Для короткого совпавшего тега она иначе предложит тот же релиз.
+            current = installed == latest if branch == "master" and latest else None
             data = dict(version=installed, firewall=backend, system=metrics,
-                        version_info=dict(branch=branch, latest=latest),
+                        version_info=dict(branch=branch, current=current,
+                                          latest=None if current and len(installed) < 7 else latest),
                         attack_sources=attack_sources(),
                         boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
                         cursor=cursor, events=rows, families=counters(backend))
