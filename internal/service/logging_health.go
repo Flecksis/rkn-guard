@@ -1,12 +1,15 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -38,95 +41,116 @@ func (s *LoggingService) CheckHealth() error {
 	return nil
 }
 
-// Пишем в журнал ядра без SRC: проверка не увеличивает счётчики атак.
-// В native-режиме при необходимости проверяем настоящее сообщение firewall.
-func (s *LoggingService) verifyDelivery(timeout time.Duration) error {
-	var nonce [16]byte
+func (s *LoggingService) verifyDelivery(mode string, timeout time.Duration) error {
+	backend, err := SelectFirewall(mode, NewCommandService(s.logger))
+	if err != nil {
+		return fmt.Errorf("выбор firewall для проверки журнала: %w", err)
+	}
+	// LOG в iptables принимает не больше 29 байт в префиксе.
+	var nonce [5]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return err
 	}
-	token := fmt.Sprintf("rkn-guard-check-%x", nonce)
-	kernel, err := os.OpenFile(s.path("/dev/kmsg"), os.O_WRONLY, 0)
+	var failures []error
+	for _, p := range []struct {
+		family, host, path, iptables string
+	}{
+		{"4", "127.0.0.1", IPv4LogPath, "iptables"},
+		{"6", "::1", IPv6LogPath, "ip6tables"},
+	} {
+		prefix := fmt.Sprintf("ANTISCAN-v%s: chk-%x ", p.family, nonce)
+		started := time.Now()
+		err := sendLogProbe(backend, p.family, p.host, p.iptables, prefix)
+		if err == nil {
+			err = waitForLog(s.path(p.path), prefix, started, timeout)
+		}
+		if err != nil {
+			failures = append(failures, fmt.Errorf("IPv%s (%s): %w", p.family, backend, err))
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func runProbeCommand(name string, args ...string) error {
+	out, err := exec.Command(name, args...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("не удалось проверить доставку событий через /dev/kmsg: %w", err)
+		return fmt.Errorf("%s %s: %w %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
-	for _, family := range []string{"v4", "v6"} {
-		if _, err := fmt.Fprintf(kernel, "<4>ANTISCAN-%s: %s\n", family, token); err != nil {
-			kernel.Close()
-			return err
+	return nil
+}
+
+func sendLogProbe(backend, family, host, iptables, prefix string) (result error) {
+	socket, err := net.ListenUDP("udp"+family, &net.UDPAddr{IP: net.ParseIP(host)})
+	if err != nil {
+		return fmt.Errorf("открытие UDP на %s: %w", host, err)
+	}
+	defer socket.Close()
+	addr := socket.LocalAddr().(*net.UDPAddr)
+	port := strconv.Itoa(addr.Port)
+	var cleanup func() error
+	if backend == "iptables" {
+		rule := []string{"-o", "lo", "-s", host, "-d", host, "-p", "udp", "--sport", port, "--dport", port, "-j", "LOG", "--log-prefix", prefix}
+		err = runProbeCommand(iptables, append([]string{"-w", "5", "-I", "OUTPUT", "1"}, rule...)...)
+		cleanup = func() error {
+			return runProbeCommand(iptables, append([]string{"-w", "5", "-D", "OUTPUT"}, rule...)...)
 		}
+	} else {
+		table := "rkn_probe_" + family + "_" + port
+		proto := "ip"
+		if family == "6" {
+			proto = "ip6"
+		}
+		script := fmt.Sprintf("create table inet %s\nadd chain inet %s output { type filter hook output priority -301; policy accept; }\nadd rule inet %s output oifname \"lo\" %s saddr %s %s daddr %s udp sport %s udp dport %s log prefix %q\n", table, table, table, proto, host, proto, host, port, port, prefix)
+		cmd := exec.Command("nft", "-f", "-")
+		cmd.Stdin = strings.NewReader(script)
+		if out, cmdErr := cmd.CombinedOutput(); cmdErr != nil {
+			err = fmt.Errorf("nft: %w %s", cmdErr, strings.TrimSpace(string(out)))
+		}
+		cleanup = func() error { return runProbeCommand("nft", "delete", "table", "inet", table) }
 	}
-	if err := kernel.Close(); err != nil {
-		return err
+	if err != nil {
+		return fmt.Errorf("установка проверочного правила: %w", err)
 	}
+	defer func() {
+		if err := cleanup(); err != nil {
+			result = errors.Join(result, fmt.Errorf("удаление проверочного правила: %w", err))
+		}
+	}()
+	if _, err := socket.WriteToUDP([]byte("rkn-guard"), addr); err != nil {
+		return fmt.Errorf("отправка UDP на %s: %w", addr, err)
+	}
+	return nil
+}
+
+func waitForLog(path, prefix string, started time.Time, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	probed := false
 	for {
-		ready := true
-		for index, name := range []string{IPv4LogPath, IPv6LogPath} {
-			prefix := []string{"ANTISCAN-v4: ", "ANTISCAN-v6: "}[index]
-			ok, err := logContains(s.path(name), prefix+token)
-			if err != nil {
-				return err
-			}
-			ready = ready && ok
+		ok, err := logContains(path, prefix)
+		if err != nil {
+			return fmt.Errorf("чтение %s: %w", path, err)
 		}
-		if ready {
+		if ok {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			if !probed && s.root == "" {
-				state, err := LoadFirewall()
-				if err == nil && (state.Backend == "nftables" || state.Backend == "firewalld") {
-					if err := probeKernelLogging(token); err != nil {
-						return err
-					}
-					probed = true
-					deadline = time.Now().Add(timeout)
-					continue
-				}
-			}
-			return fmt.Errorf("события ANTISCAN не дошли в оба журнала; проверьте приём сообщений ядра и подключение %s", RsyslogConfigPath)
+			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-}
-
-// imklog может отбрасывать пользовательские записи в /dev/kmsg.
-func probeKernelLogging(token string) (result error) {
-	table := "rkn_probe_" + strings.TrimPrefix(token, "rkn-guard-check-")
-	script := fmt.Sprintf("add table inet %s\nadd chain inet %s output { type filter hook output priority -301; policy accept; }\n", table, table)
-	var sockets []*net.UDPConn
-	defer func() {
-		for _, socket := range sockets {
-			socket.Close()
-		}
-	}()
-	for i, host := range []string{"127.0.0.1", "::1"} {
-		socket, err := net.ListenUDP([]string{"udp4", "udp6"}[i], &net.UDPAddr{IP: net.ParseIP(host)})
-		if err != nil {
-			return err
-		}
-		sockets = append(sockets, socket)
-		port := socket.LocalAddr().(*net.UDPAddr).Port
-		script += fmt.Sprintf("add rule inet %s output %s daddr %s udp sport %d udp dport %d log prefix \"ANTISCAN-v%d: %s \"\n", table, []string{"ip", "ip6"}[i], host, port, port, []int{4, 6}[i], token)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "journalctl", "-k", "--since", fmt.Sprintf("@%d", started.Unix()), "--grep", strings.TrimSpace(prefix), "-n", "1", "-o", "cat", "--no-pager", "-q")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err == nil && strings.Contains(string(out), strings.TrimSpace(prefix)) {
+		return fmt.Errorf("метка есть в журнале ядра, но отсутствует в %s; проверьте вход rsyslog и %s", path, RsyslogConfigPath)
 	}
-	command := exec.Command("nft", "-f", "-")
-	command.Stdin = strings.NewReader(script)
-	if output, err := command.CombinedOutput(); err != nil {
-		return fmt.Errorf("проверка журнала ядра: %s: %w", output, err)
+	var exit *exec.ExitError
+	if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 1 && stderr.Len() == 0) {
+		return fmt.Errorf("метки нет в %s; не удалось проверить журнал ядра: %w %s", path, err, strings.TrimSpace(stderr.String()))
 	}
-	defer func() {
-		if output, err := exec.Command("nft", "delete", "table", "inet", table).CombinedOutput(); err != nil {
-			result = fmt.Errorf("удаление проверочной таблицы %s: %s: %w", table, output, err)
-		}
-	}()
-	for _, socket := range sockets {
-		if _, err := socket.WriteToUDP([]byte(token), socket.LocalAddr().(*net.UDPAddr)); err != nil {
-			return err
-		}
-	}
-	return nil
+	return fmt.Errorf("пакет отправлен, метки %q нет в журнале ядра и в %s; проверьте логирование пакетов в ядре", strings.TrimSpace(prefix), path)
 }
 
 func logContains(path, token string) (bool, error) {

@@ -36,7 +36,7 @@ func NewLoggingService(logger zerolog.Logger) *LoggingService {
 }
 
 // Setup настраивает rsyslog, ротацию и сбор статистики.
-func (s *LoggingService) Setup() (result error) {
+func (s *LoggingService) Setup(backend string) (result error) {
 	if err := s.ensureDependencies(); err != nil {
 		return err
 	}
@@ -90,7 +90,7 @@ func (s *LoggingService) Setup() (result error) {
 	if err != nil {
 		return err
 	}
-	if err := s.verifyDelivery(5 * time.Second); err != nil {
+	if err := s.verifyDelivery(backend, 5*time.Second); err != nil {
 		return err
 	}
 	// Настраиваем периодический запуск.
@@ -109,7 +109,7 @@ func (s *LoggingService) Setup() (result error) {
 
 // Refresh дожидается завершения старого сборщика перед заменой его скрипта.
 // Старый сборщик нельзя прерывать после того, как он уже очистил логи.
-func (s *LoggingService) Refresh() (result error) {
+func (s *LoggingService) Refresh(backend string) (result error) {
 	if err := s.ensureDependencies(); err != nil {
 		return err
 	}
@@ -117,7 +117,7 @@ func (s *LoggingService) Refresh() (result error) {
 		return err
 	}
 	if _, err := os.Stat(s.path(AggregateLogsTimerPath)); os.IsNotExist(err) {
-		return s.Setup()
+		return s.Setup(backend)
 	}
 	if err := exec.Command("systemctl", "stop", "antiscan-aggregate.timer").Run(); err != nil {
 		return err
@@ -142,7 +142,7 @@ func (s *LoggingService) Refresh() (result error) {
 		}
 		time.Sleep(time.Second)
 	}
-	return s.Setup()
+	return s.Setup(backend)
 }
 
 // setupRsyslog создаёт настройки rsyslog.

@@ -101,7 +101,8 @@ class StatisticsTests(unittest.TestCase):
 
     def test_kernel_probe_is_not_an_attack(self):
         probe = event('127.0.0.1').replace('ANTISCAN-v4: ', 'ANTISCAN-v4: rkn-guard-check-' + 'a' * 32 + ' ')
-        self.write(self.v4, probe + event())
+        new_probe = event('127.0.0.1').replace('ANTISCAN-v4: ', 'ANTISCAN-v4: chk-0123456789 ')
+        self.write(self.v4, probe + new_probe + event())
         rows, _ = self.collect()
         self.assertEqual(list(rows), ['v4|192.0.2.1'])
         self.assertEqual(rows['v4|192.0.2.1']['count'], 1)

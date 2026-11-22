@@ -187,7 +187,7 @@ def counters(backend):
 
 def parse_event(raw, reference):
     line = raw.decode(errors="replace").rstrip()
-    if not re.search(r"ANTISCAN-v[46]:", line) or re.search(r"ANTISCAN-v[46]: rkn-guard-check-[0-9a-f]{32}\b", line):
+    if not re.search(r"ANTISCAN-v[46]:", line) or re.search(r"ANTISCAN-v[46]: (?:rkn-guard-check-[0-9a-f]{32}|chk-[0-9a-f]{10})\b", line):
         return None
     fields = dict(re.findall(r"\b(SRC|PROTO|DPT)=([^\s]+)", line))
     if not fields.get("SRC") or not fields.get("PROTO"):

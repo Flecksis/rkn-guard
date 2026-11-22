@@ -137,7 +137,7 @@ func main() {
 				return err
 			}
 			defer lock.Close()
-			return service.NewLoggingService(log.Logger).Refresh()
+			return service.NewLoggingService(log.Logger).Refresh("auto")
 		},
 	})
 	rootCmd.AddCommand(&cobra.Command{
@@ -205,7 +205,7 @@ func runFull(cmd *cobra.Command, args []string) {
 			log.Fatal().Err(err).Msg("Установка firewall не завершена")
 		}
 		if enableLogging {
-			if err := loggingSvc.Refresh(); err != nil {
+			if err := loggingSvc.Refresh(mode); err != nil {
 				log.Fatal().Err(err).Msg("Статистика не настроена")
 			}
 		}
@@ -254,7 +254,7 @@ func runFull(cmd *cobra.Command, args []string) {
 	// Настраиваем журнал, если он включён.
 	var loggingErr error
 	if enableLogging {
-		loggingErr = loggingSvc.Refresh()
+		loggingErr = loggingSvc.Refresh(mode)
 	}
 
 	// Создаём сервис восстановления ipset, который запускается раньше UFW.

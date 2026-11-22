@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -50,35 +49,14 @@ exit 0
 			write("chown", "exit 0\n")
 			write("chmod", "exit 0\n")
 			s := &LoggingService{logger: zerolog.Nop(), root: root}
-			kernel := s.path("/dev/kmsg")
-			if err := os.WriteFile(kernel, nil, 0600); err != nil {
-				t.Fatal(err)
+			t.Setenv("TEST_LOG_DIR", s.path("/var/log"))
+			for _, command := range []string{"iptables", "ip6tables"} {
+				write(command, `test "$3" = "-I" || exit 0
+for arg do prefix="$arg"; done
+case "$prefix" in *ANTISCAN-v4:*) family=4;; *) family=6;; esac
+echo "${prefix}IN=lo SRC=localhost" >> "$TEST_LOG_DIR/iptables-scanners-ipv$family.log"
+`)
 			}
-			stop, done := make(chan struct{}), make(chan struct{})
-			t.Cleanup(func() { close(stop); <-done })
-			go func() {
-				defer close(done)
-				previous := ""
-				for {
-					select {
-					case <-stop:
-						return
-					case <-time.After(10 * time.Millisecond):
-					}
-					data, _ := os.ReadFile(kernel)
-					if len(data) == 0 || string(data) == previous || !strings.Contains(string(data), "ANTISCAN-v6:") {
-						continue
-					}
-					for _, path := range []string{IPv4LogPath, IPv6LogPath} {
-						f, err := os.OpenFile(s.path(path), os.O_APPEND|os.O_WRONLY, 0640)
-						if err == nil {
-							f.Write(data)
-							f.Close()
-						}
-					}
-					previous = string(data)
-				}
-			}()
 			for _, path := range []string{IPv4LogPath, IPv6LogPath, AggregateLogPath, AggregateLogsTimerPath} {
 				if failure == "fresh" {
 					continue
@@ -95,7 +73,7 @@ exit 0
 					t.Fatal(err)
 				}
 			}
-			err := s.Refresh()
+			err := s.Refresh("iptables")
 			if failure == "rsyslogd" || failure == "enable rsyslog" {
 				calls, _ := os.ReadFile(filepath.Join(root, "calls"))
 				if strings.Contains(string(calls), "restart rsyslog") {
@@ -106,7 +84,7 @@ exit 0
 				t.Fatalf("failure=%q err=%v", failure, err)
 			}
 			if failure == "" || failure == "fresh" {
-				if err := s.Refresh(); err != nil {
+				if err := s.Refresh("iptables"); err != nil {
 					t.Fatal(err)
 				}
 				calls, _ := os.ReadFile(filepath.Join(root, "calls"))
@@ -134,7 +112,7 @@ exit 0
 					t.Fatal("при сбое не восстановлен конфиг")
 				}
 				t.Setenv("REPAIR_FAIL", "")
-				if err := s.Refresh(); err != nil {
+				if err := s.Refresh("iptables"); err != nil {
 					t.Fatalf("повтор после сбоя: %v", err)
 				}
 			}

@@ -154,7 +154,7 @@ def collect(log_dir, state_path, csv_path, cache_path, lookup=True, now=None):
                         break  # Запись этой строки ещё может продолжаться.
                     offset += len(raw)
                     line = raw.decode("utf-8", errors="replace")
-                    if f"ANTISCAN-{family}:" not in line or re.search(r'ANTISCAN-v[46]: rkn-guard-check-[0-9a-f]{32}\b', line):
+                    if f"ANTISCAN-{family}:" not in line or re.search(r'ANTISCAN-v[46]: (?:rkn-guard-check-[0-9a-f]{32}|chk-[0-9a-f]{10})\b', line):
                         continue
                     match = re.search(r"(?:^|\s)SRC=([^\s]+)(?=\s|$)", line)
                     if not match:
@@ -309,7 +309,7 @@ def live_display(path):
         process = subprocess.Popen(['tail', '-n', '15', '-F', '--sleep-interval=0.2', '--max-unchanged-stats=1', '--', str(path)], stdout=subprocess.PIPE,
                                    text=True, encoding='utf-8', errors='replace')
         for line in process.stdout:
-            if re.search(r'ANTISCAN-v[46]: rkn-guard-check-[0-9a-f]{32}\b', line):
+            if re.search(r'ANTISCAN-v[46]: (?:rkn-guard-check-[0-9a-f]{32}|chk-[0-9a-f]{10})\b', line):
                 continue
             event = live_event(line)
             if event: row(event)
