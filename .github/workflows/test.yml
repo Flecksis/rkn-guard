@@ -5,6 +5,60 @@ on:
 permissions:
   contents: read
 jobs:
+  lifecycle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/rkn-guard" ./cmd
+      - name: Установить защиту и проверить оба режима удаления на одноразовой VM
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ipset iptables ufw rsyslog logrotate
+          if ! sudo env PATH="$PATH" RKN_GUARD_BIN="$RUNNER_TEMP/rkn-guard" bash tests/integration/full_uninstall_flow.sh > "$RUNNER_TEMP/install.log" 2>&1; then
+            tail -20 "$RUNNER_TEMP/install.log"
+            echo "::error::$(tail -20 "$RUNNER_TEMP/install.log" | tr '\n' ' ')"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/install.log"
+      - name: Проверить откат обновления списков и правил UFW
+        env:
+          RKN_RUNNER: ${{ runner.environment }}
+        run: |
+          sudo install -m755 "$RUNNER_TEMP/rkn-guard" /usr/local/bin/rkn-guard
+          if ! sudo env RKN_DISPOSABLE_TEST=yes RUNNER_ENVIRONMENT="$RKN_RUNNER" GITHUB_ACTIONS=true bash tests/integration/safe_updates.sh > "$RUNNER_TEMP/rollback.log" 2>&1; then
+            tail -15 "$RUNNER_TEMP/rollback.log"
+            echo "::error::$(tail -15 "$RUNNER_TEMP/rollback.log" | tr '\n' ' ')"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/rollback.log"
+  packaging:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:12', 'ubuntu:24.04', 'fedora:43', 'rockylinux/rockylinux:9', 'almalinux:9']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/rkn-guard" ./cmd
+      - name: Установка и повторная установка CLI в контейнере
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP/rkn-guard:/candidate:ro" "$IMAGE" bash -ec '
+            source "/src/app install.sh"
+            for attempt in 1 2; do
+              file=$(mktemp); cp /candidate "$file"; install_binary "$file"; verify_installation
+            done
+            /usr/local/bin/rkn-guard build-info
+            /usr/local/bin/rkn-guard sources --help
+            bash -n /src/install.sh
+          '
   unit:
     runs-on: ubuntu-latest
     steps:

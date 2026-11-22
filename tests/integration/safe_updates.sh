@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
-# Тест меняет firewall. Запускать только в одноразовом Linux-контейнере с CAP_NET_ADMIN и UFW.
+# Тест меняет firewall одноразового контейнера или выделенной VM GitHub Actions.
 set -euo pipefail
-[[ -f /.dockerenv && ${RKN_DISPOSABLE_TEST:-} == yes ]] || { echo 'Use a disposable container and RKN_DISPOSABLE_TEST=yes'; exit 1; }
+[[ ${RKN_DISPOSABLE_TEST:-} == yes && ( -f /.dockerenv || ( ${GITHUB_ACTIONS:-} == true && ${RUNNER_ENVIRONMENT:-} == github-hosted ) ) ]] || { echo 'Требуется одноразовое окружение'; exit 1; }
 work=$(mktemp -d)
-trap 'kill "${server:-}" 2>/dev/null || true; rm -rf "$work"' EXIT
+cleanup() {
+    local status=$?
+    if ((status)); then
+        for log in update full failure; do
+            [[ ! -f "$work/$log.log" ]] || tail -4 "$work/$log.log" >&2
+        done
+    fi
+    kill "${server:-}" 2>/dev/null || true
+    rm -rf "$work"
+}
+trap cleanup EXIT
 printf '192.0.2.1\n2001:db8::1\n' > "$work/list"
 printf '192.0.2.2\n2001:db8::2\n' > "$work/next"
 printf '<html>error</html>\n' > "$work/invalid"

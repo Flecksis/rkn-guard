@@ -223,7 +223,12 @@ run_full_install() {
   fi
 
   if command -v ufw >/dev/null 2>&1; then
-    assert_file_exists /etc/systemd/system/antiscan-move-rules.service
+    ufw reload
+    for item in "iptables ufw-before-input" "ip6tables ufw6-before-input"; do
+      read -r binary chain <<<"$item"
+      first=$("$binary" -S "$chain" | awk '/^-A / && !found {print; found=1}')
+      [[ "$first" == "-A $chain -j SCANNERS-BLOCK" ]] || fail "После reload потерян первый переход в $chain"
+    done
   fi
 }
 
