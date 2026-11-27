@@ -11,6 +11,32 @@ import (
 	"github.com/rs/zerolog"
 )
 
+func TestIPv6Disabled(t *testing.T) {
+	conf := t.TempDir()
+	for _, entry := range []string{"all", "lo", "eth0", "default"} {
+		dir := filepath.Join(conf, entry)
+		if err := os.Mkdir(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		value := "1\n"
+		if entry == "default" {
+			value = "0\n"
+		}
+		if err := os.WriteFile(filepath.Join(dir, "disable_ipv6"), []byte(value), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !ipv6Disabled(conf) {
+		t.Fatal("IPv6 отключён на всех интерфейсах")
+	}
+	if err := os.WriteFile(filepath.Join(conf, "eth0", "disable_ipv6"), []byte("0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if ipv6Disabled(conf) {
+		t.Fatal("IPv6 включён на eth0")
+	}
+}
+
 func TestDeliveryFailurePreservesLogs(t *testing.T) {
 	s := &LoggingService{root: t.TempDir()}
 	for _, path := range []string{IPv4LogPath, IPv6LogPath} {

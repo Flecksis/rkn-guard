@@ -9,8 +9,10 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -61,6 +63,13 @@ func (s *LoggingService) verifyDelivery(mode string, timeout time.Duration) erro
 		prefix := fmt.Sprintf("ANTISCAN-v%s: chk-%x ", p.family, nonce)
 		started := time.Now()
 		err := sendLogProbe(backend, p.family, p.host, p.iptables, prefix)
+		var socketErr *net.OpError
+		if p.family == "6" && errors.As(err, &socketErr) && socketErr.Op == "listen" &&
+			(errors.Is(err, syscall.EADDRNOTAVAIL) || errors.Is(err, syscall.EAFNOSUPPORT)) &&
+			ipv6Disabled(s.path("/proc/sys/net/ipv6/conf")) {
+			s.logger.Warn().Msg("IPv6 отключён, пропускаю проверку журнала IPv6")
+			continue
+		}
 		if err == nil {
 			err = waitForLog(s.path(p.path), prefix, started, timeout)
 		}
@@ -69,6 +78,27 @@ func (s *LoggingService) verifyDelivery(mode string, timeout time.Duration) erro
 		}
 	}
 	return errors.Join(failures...)
+}
+
+func ipv6Disabled(conf string) bool {
+	entries, err := os.ReadDir(conf)
+	if err != nil {
+		return os.IsNotExist(err)
+	}
+	interfaces := 0
+	for _, entry := range entries {
+		if entry.Name() == "default" {
+			continue
+		}
+		value, err := os.ReadFile(filepath.Join(conf, entry.Name(), "disable_ipv6"))
+		if err != nil || strings.TrimSpace(string(value)) != "1" {
+			return false
+		}
+		if entry.Name() != "all" {
+			interfaces++
+		}
+	}
+	return interfaces > 0
 }
 
 func runProbeCommand(name string, args ...string) error {
@@ -82,6 +112,9 @@ func runProbeCommand(name string, args ...string) error {
 func sendLogProbe(backend, family, host, iptables, prefix string) (result error) {
 	socket, err := net.ListenUDP("udp"+family, &net.UDPAddr{IP: net.ParseIP(host)})
 	if err != nil {
+		if family == "6" && errors.Is(err, syscall.EADDRNOTAVAIL) {
+			return fmt.Errorf("открытие UDP на %s: проверьте ip -6 addr show dev lo: %w", host, err)
+		}
 		return fmt.Errorf("открытие UDP на %s: %w", host, err)
 	}
 	defer socket.Close()
